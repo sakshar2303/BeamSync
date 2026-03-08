@@ -177,8 +177,8 @@
     </div>
 
     <script>
-        // Token is embedded in the URL query string by Go: /download?token=XXX
-        const TOKEN = new URLSearchParams(location.search).get('token') || '';
+        // Token is embedded directly into the HTML by the Go server:
+        const TOKEN = "{{TOKEN}}";
 
         // ── Heartbeat ────────────────────────────────────────────────────────
         // Fires immediately on load (fast device_connected) then every 5s.

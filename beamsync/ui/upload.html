@@ -188,8 +188,10 @@
         // we reload the page so the new upload.html is served with a fresh
         // token. The user never has to rescan the QR code.
         let _reloading = false;
+        let _uploading = false; // Guard against heartbeats stalling behind large file uploads
+
         function heartbeat() {
-            if (_reloading) return;
+            if (_reloading || _uploading) return;
             fetch("/heartbeat?token=" + TOKEN, { method: "POST" })
                 .then(r => {
                     if (r.status === 401 || r.status === 403) {
@@ -225,6 +227,8 @@
                 document.getElementById('status').innerText = '>> ERROR: NO DATA SELECTED';
                 return;
             }
+
+            _uploading = true; // Pause background heartbeats
 
             const fd = new FormData();
             for (let f of files) fd.append('documents', f);
@@ -269,11 +273,13 @@
                         document.getElementById('files').value = '';
                         updateFileList();
                         progressContainer.style.display = 'none';
+                        _uploading = false; // Resume heartbeats securely after UI reset
                     }, 2000);
                 } else {
                     statusEl.innerText = '>> ERROR: ' + xhr.statusText;
                     btn.disabled = false;
                     btn.innerText = '[ RETRY UPLOAD ]';
+                    _uploading = false;
                 }
             };
 
@@ -281,6 +287,7 @@
                 statusEl.innerText = '>> NETWORK ERROR';
                 btn.disabled = false;
                 btn.innerText = '[ RETRY UPLOAD ]';
+                _uploading = false;
             };
 
             xhr.send(fd);

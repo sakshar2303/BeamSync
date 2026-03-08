@@ -44,6 +44,10 @@ VIAddVersionKey "ProductVersion"  "${INFO_PRODUCTVERSION}"
 VIAddVersionKey "FileVersion"     "${INFO_PRODUCTVERSION}"
 VIAddVersionKey "LegalCopyright"  "${INFO_COPYRIGHT}"
 VIAddVersionKey "ProductName"     "${INFO_PRODUCTNAME}"
+VIAddVersionKey "OriginalFilename" "${INFO_PROJECTNAME}-${ARCH}-installer.exe"
+
+# Branding text at the bottom of the installer
+BrandingText "${INFO_PRODUCTNAME} v${INFO_PRODUCTVERSION} — ${INFO_COMPANYNAME}"
 
 # Enable HiDPI support. https://nsis.sourceforge.io/Reference/ManifestDPIAware
 ManifestDPIAware true
@@ -95,6 +99,22 @@ Section
     !insertmacro wails.associateCustomProtocols
 
     !insertmacro wails.writeUninstaller
+
+    # Fix Wails currentUser registry bug: wails_tools.nsh writes to HKLM, but Windows
+    # looks in HKCU for currentUser installs. Re-write the keys properly so Add/Remove Programs
+    # shows the Publisher instead of "Unknown"
+    SetRegView 64
+    WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "${INFO_COMPANYNAME}"
+    WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "${INFO_PRODUCTNAME}"
+    WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "${INFO_PRODUCTVERSION}"
+    WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\${PRODUCT_EXECUTABLE}"
+    WriteRegStr HKCU "${UNINST_KEY}" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
+    WriteRegStr HKCU "${UNINST_KEY}" "QuietUninstallString" "$\"$INSTDIR\uninstall.exe$\" /S"
+
+    # Extra ARP keys
+    WriteRegStr HKCU "${UNINST_KEY}" "URLInfoAbout" "https://github.com/PranavAgarkar07/BeamSync"
+    WriteRegStr HKCU "${UNINST_KEY}" "Contact" "${INFO_COMPANYNAME}"
+    WriteRegStr HKCU "${UNINST_KEY}" "HelpLink" "https://github.com/PranavAgarkar07/BeamSync/issues"
 SectionEnd
 
 Section "uninstall"
@@ -111,4 +131,5 @@ Section "uninstall"
     !insertmacro wails.unassociateCustomProtocols
 
     !insertmacro wails.deleteUninstaller
+    DeleteRegKey HKCU "${UNINST_KEY}"
 SectionEnd

@@ -456,6 +456,7 @@ func StartSender(filePaths []string, callback EventCallback) (*HTTPServer, strin
 			return
 		}
 		html := strings.Replace(string(content), "{{FILES}}", buildFileBlock(filePaths), 1)
+		html = strings.Replace(html, "{{TOKEN}}", token, 1)
 		w.Write([]byte(html))
 	})
 
