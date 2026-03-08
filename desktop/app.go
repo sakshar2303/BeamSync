@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	stdruntime "runtime"
+	"sort"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -37,10 +38,17 @@ type EventData struct {
 	Data string
 }
 
+// ReceivedFile holds metadata about a file in the save directory.
+type ReceivedFile struct {
+	Name      string `json:"name"`
+	SizeBytes int64  `json:"sizeBytes"`
+	ModTime   string `json:"modTime"` // "HH:MM" local time
+}
+
 // NewApp creates a new App application struct
 func NewApp() *App {
 	return &App{
-		eventChan: make(chan EventData, 100), // Buffered channel
+		eventChan: make(chan EventData, 100),
 	}
 }
 
@@ -48,13 +56,9 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
-	// Start event processor on main thread
 	go a.processEvents()
-
-	// Start IP Monitor
 	go a.startIPMonitor()
 
-	// Initialize Audio Engine
 	a.audio = audio.NewAudioEngine()
 	if err := a.audio.Init(); err != nil {
 		fmt.Println("⚠️ Audio Init Failed:", err)
@@ -68,16 +72,12 @@ func (a *App) startup(ctx context.Context) {
 			"success": "transfer_complete.wav",
 			"startup": "startup.wav",
 		}
-
 		for name, file := range sounds {
-			// Access embedded file
 			f, err := soundFS.Open("sounds/" + file)
 			if err != nil {
 				fmt.Printf("⚠️ Failed to open embedded sound '%s': %v\n", file, err)
 				continue
 			}
-
-			// LoadSoundFromStream (closes f automatically)
 			if err := a.audio.LoadSoundFromStream(name, f); err != nil {
 				fmt.Printf("⚠️ Failed to load sound '%s': %v\n", name, err)
 			} else {
@@ -87,10 +87,9 @@ func (a *App) startup(ctx context.Context) {
 	}
 }
 
-// processEvents handles events on a safe goroutine
+// processEvents handles backend events on a safe goroutine before relaying to Wails.
 func (a *App) processEvents() {
 	for event := range a.eventChan {
-		// Intercept device_connected to re-verify IP
 		if event.Name == "device_connected" {
 			currentRealIP := getLocalIP()
 			if a.currentIP != "" && a.currentIP != currentRealIP {
@@ -104,27 +103,24 @@ func (a *App) processEvents() {
 	}
 }
 
-// safeEmit safely emits an event to the frontend, handling panics and nil context
+// safeEmit wraps Wails runtime.EventsEmit with panic recovery.
 func (a *App) safeEmit(eventName string, data interface{}) {
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Printf("⚠️ safeEmit panic for event '%s': %v\n", eventName, r)
 		}
 	}()
-
 	if a.ctx == nil {
 		fmt.Printf("⚠️ safeEmit: Context is nil, cannot emit event '%s'\n", eventName)
 		return
 	}
-
 	runtime.EventsEmit(a.ctx, eventName, data)
 	fmt.Printf("✅ Event emitted: %s\n", eventName)
 }
 
-// shutdown is called when the app is closing
+// shutdown is called when the app is closing.
 func (a *App) shutdown(ctx context.Context) {
 	close(a.eventChan)
-
 	if a.serverApp != nil {
 		fmt.Println("🛑 Shutting down receiver server...")
 		if err := a.serverApp.Shutdown(); err != nil {
@@ -139,7 +135,7 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 }
 
-// PlaySound exposed to Frontend
+// PlaySound is exposed to the frontend.
 func (a *App) PlaySound(name string) {
 	if a.audio != nil {
 		a.audio.Play(name)
@@ -150,7 +146,14 @@ func (a *App) PlaySound(name string) {
 // BRIDGE METHODS
 // ---------------------------------------------------------
 
-// StartReceiverDefault: silent startup using Downloads folder
+// makeCallback returns an EventCallback that queues events into the channel.
+func (a *App) makeCallback() beamsync.EventCallback {
+	return func(name string, data string) {
+		a.eventChan <- EventData{Name: name, Data: data}
+	}
+}
+
+// StartReceiverDefault starts the receiver using the default Downloads/BeamSync folder.
 func (a *App) StartReceiverDefault() string {
 	if a.serverApp != nil {
 		fmt.Println("🔄 Stopping previous receiver server...")
@@ -165,33 +168,27 @@ func (a *App) StartReceiverDefault() string {
 	if err == nil {
 		savePath = filepath.Join(home, "Downloads", "BeamSync")
 	}
-
-	a.lastSavePath = savePath // Store for OpenFile
+	a.lastSavePath = savePath
 
 	if err := os.MkdirAll(savePath, 0755); err != nil {
 		fmt.Println("⚠️ Failed to create save directory:", err)
 		return "Error: Could not create save directory"
 	}
 
-	// Setup callback - Thread-safe via Channel
-	beamsync.SetEventCallback(func(name string, data string) {
-		a.eventChan <- EventData{Name: name, Data: data}
-	})
-
-	app, port := beamsync.StartServer(savePath, 3000)
+	app, port, token := beamsync.StartServer(savePath, 3000, a.makeCallback())
 	a.serverApp = app
 
 	localIP := getLocalIP()
-	url := "http://" + localIP + ":" + port
-
 	a.currentIP = localIP
 	a.currentPort = port
 
+	// Embed token in the URL so the mobile page's JS can attach it to requests.
+	url := fmt.Sprintf("http://%s:%s/?token=%s", localIP, port, token)
 	fmt.Println("📡 Receiver started:", url)
 	return url
 }
 
-// StartReceiver: Tells the Brain to listen for files
+// StartReceiver lets the user pick a save folder.
 func (a *App) StartReceiver() string {
 	if a.serverApp != nil {
 		fmt.Println("🔄 Stopping previous receiver server...")
@@ -204,32 +201,24 @@ func (a *App) StartReceiver() string {
 	selection, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
 		Title: "Select Folder to Save Received Files",
 	})
-
 	if err != nil || selection == "" {
 		return "Cancelled"
 	}
+	a.lastSavePath = selection
 
-	a.lastSavePath = selection // Store for OpenFile
-
-	// Setup callback - Thread-safe via Channel
-	beamsync.SetEventCallback(func(name string, data string) {
-		a.eventChan <- EventData{Name: name, Data: data}
-	})
-
-	app, port := beamsync.StartServer(selection, 3000)
+	app, port, token := beamsync.StartServer(selection, 3000, a.makeCallback())
 	a.serverApp = app
 
 	localIP := getLocalIP()
-	url := "http://" + localIP + ":" + port
-
 	a.currentIP = localIP
 	a.currentPort = port
 
+	url := fmt.Sprintf("http://%s:%s/?token=%s", localIP, port, token)
 	fmt.Println("📡 Receiver started:", url)
 	return url
 }
 
-// StartSender: Asks user for a file, then tells Brain to host it
+// StartSender lets the user pick files and hosts them for download.
 func (a *App) StartSender() string {
 	if a.senderApp != nil {
 		fmt.Println("🔄 Stopping previous sender server...")
@@ -242,29 +231,25 @@ func (a *App) StartSender() string {
 	selection, err := runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
 		Title: "Select File(s) to Send",
 	})
-
 	if err != nil || len(selection) == 0 {
 		return "Cancelled"
 	}
 
-	app, port := beamsync.StartSender(selection)
+	app, port, token := beamsync.StartSender(selection, a.makeCallback())
 	a.senderApp = app
 
 	localIP := getLocalIP()
-	url := "http://" + localIP + ":" + port
-
 	a.currentIP = localIP
 	a.currentPort = port
 
-	// Display the URL prominently
+	// Root page loads without token (acts as the landing), downloads require token.
+	url := fmt.Sprintf("http://%s:%s/", localIP, port)
+
 	fmt.Println("========================================")
-	fmt.Println("📤 SENDER STARTED")
-	fmt.Println("========================================")
-	fmt.Printf("📱 Open this URL on your mobile device:\n")
-	fmt.Printf("   %s\n", url)
+	fmt.Println("📤 SENDER STARTED:", url)
+	fmt.Printf("   token: %s\n", token)
 	fmt.Println("========================================")
 
-	// Emit event to frontend with the URL
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		a.safeEmit("sender_started", url)
@@ -273,7 +258,7 @@ func (a *App) StartSender() string {
 	return url
 }
 
-// StopReceiver: Stop the receiver server
+// StopReceiver stops the receiver server.
 func (a *App) StopReceiver() string {
 	if a.serverApp != nil {
 		fmt.Println("🛑 Stopping receiver server...")
@@ -286,7 +271,7 @@ func (a *App) StopReceiver() string {
 	return "No receiver running"
 }
 
-// StopSender: Stop the sender server
+// StopSender stops the sender server.
 func (a *App) StopSender() string {
 	if a.senderApp != nil {
 		fmt.Println("🛑 Stopping sender server...")
@@ -299,19 +284,17 @@ func (a *App) StopSender() string {
 	return "No sender running"
 }
 
-// ResetApp: Stops all servers and resets state
+// ResetApp stops all servers and resets state.
 func (a *App) ResetApp() {
 	fmt.Println("🔄 Resetting App State...")
 	a.StopReceiver()
 	a.StopSender()
 	a.serverApp = nil
 	a.senderApp = nil
-	// We don't reset IP/Port here because we might want to restart immediately
-	// But we should probably clear the currentPort so IP monitor doesn't emit url_changed
 	a.currentPort = ""
 }
 
-// OpenFile opens a file using the default system application.
+// OpenFile opens a received file with the system default application.
 func (a *App) OpenFile(filename string) string {
 	if a.lastSavePath == "" {
 		return "Error: No active save directory"
@@ -320,10 +303,8 @@ func (a *App) OpenFile(filename string) string {
 	fullPath := filepath.Join(a.lastSavePath, filepath.Base(filename))
 	fmt.Println("📂 Opening file:", fullPath)
 
-	var cmd *exec.Cmd
 	var commandName string
 	var args []string
-
 	switch stdruntime.GOOS {
 	case "windows":
 		commandName = "cmd"
@@ -331,21 +312,59 @@ func (a *App) OpenFile(filename string) string {
 	case "darwin":
 		commandName = "open"
 		args = []string{fullPath}
-	default: // linux, freebsd, openbsd, netbsd
+	default:
 		commandName = "xdg-open"
 		args = []string{fullPath}
 	}
 
-	cmd = exec.Command(commandName, args...)
-	if err := cmd.Start(); err != nil {
+	if err := exec.Command(commandName, args...).Start(); err != nil {
 		return fmt.Sprintf("Error opening file: %v", err)
 	}
 	return "File opened"
 }
 
+// GetReceivedFiles returns existing files in the save directory so the UI
+// can restore the received-files log after a restart or reconnect.
+func (a *App) GetReceivedFiles() []ReceivedFile {
+	if a.lastSavePath == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(a.lastSavePath)
+	if err != nil {
+		fmt.Println("⚠️ GetReceivedFiles: could not read dir:", err)
+		return nil
+	}
+	var result []ReceivedFile
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		result = append(result, ReceivedFile{
+			Name:      e.Name(),
+			SizeBytes: info.Size(),
+			ModTime:   info.ModTime().Format("02 Jan · 15:04"),
+		})
+	}
+	// Sort newest-first by filesystem mod time
+	sort.Slice(result, func(i, j int) bool {
+		ii, _ := os.Stat(filepath.Join(a.lastSavePath, result[i].Name))
+		jj, _ := os.Stat(filepath.Join(a.lastSavePath, result[j].Name))
+		if ii == nil || jj == nil {
+			return false
+		}
+		return ii.ModTime().After(jj.ModTime())
+	})
+	return result
+}
+
 // ---------------------------------------------------------
-// HELPER
+// HELPERS
 // ---------------------------------------------------------
+
 func getLocalIP() string {
 	conn, err := net.Dial("udp", "8.8.8.8:80")
 	if err != nil {
@@ -353,16 +372,13 @@ func getLocalIP() string {
 		return "127.0.0.1"
 	}
 	defer conn.Close()
-
-	localAddr := conn.LocalAddr().(*net.UDPAddr)
-	return localAddr.IP.String()
+	return conn.LocalAddr().(*net.UDPAddr).IP.String()
 }
 
-// startIPMonitor checks for IP changes periodically
+// startIPMonitor polls for IP changes every 3 seconds.
 func (a *App) startIPMonitor() {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
-
 	for {
 		select {
 		case <-a.ctx.Done():
@@ -370,10 +386,8 @@ func (a *App) startIPMonitor() {
 		case <-ticker.C:
 			newIP := getLocalIP()
 			if a.currentIP != "" && newIP != a.currentIP {
-				fmt.Printf("🔄 Network Change Detected! IP changed from %s to %s\n", a.currentIP, newIP)
+				fmt.Printf("🔄 Network Change! IP: %s → %s\n", a.currentIP, newIP)
 				a.currentIP = newIP
-
-				// Only emit update if we have an active port (server running)
 				if a.currentPort != "" {
 					newURL := fmt.Sprintf("http://%s:%s", a.currentIP, a.currentPort)
 					fmt.Println("📡 Updating URL to:", newURL)

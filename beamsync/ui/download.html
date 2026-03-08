@@ -7,18 +7,21 @@
     <title>BeamSync Downlink</title>
     <style>
         :root {
-            --bg: #000000;
+            --bg: #060a06;
             --primary: #ffb000;
-            /* Amber for Downlink */
-            --glass: rgba(255, 176, 0, 0.1);
-            --border: #ffb000;
-            --text: #ffb000;
-            --scanline: rgba(255, 176, 0, 0.05);
+            --glass: rgba(255, 176, 0, 0.08);
+            --border: rgba(255, 176, 0, 0.35);
+            --dim: rgba(255, 176, 0, 0.4);
+            --scanline: rgba(255, 176, 0, 0.04);
+        }
+
+        * {
+            box-sizing: border-box;
         }
 
         body {
-            background-color: var(--bg);
-            color: var(--text);
+            background: var(--bg);
+            color: var(--primary);
             font-family: 'Courier New', Courier, monospace;
             margin: 0;
             padding: 20px;
@@ -26,14 +29,12 @@
             flex-direction: column;
             align-items: center;
             min-height: 100vh;
+            overflow-x: hidden;
         }
 
         .scanlines {
             position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
+            inset: 0;
             background: repeating-linear-gradient(0deg,
                     rgba(0, 0, 0, 0) 0px,
                     rgba(0, 0, 0, 0) 1px,
@@ -47,58 +48,110 @@
             position: relative;
             z-index: 1;
             width: 100%;
-            max-width: 400px;
+            max-width: 420px;
+        }
+
+        header {
+            text-align: center;
+            padding-bottom: 16px;
+            margin-bottom: 28px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .logo {
+            font-size: 2rem;
+            margin-bottom: 4px;
         }
 
         h1 {
-            text-align: center;
-            border-bottom: 2px solid var(--primary);
-            padding-bottom: 10px;
-            margin-bottom: 30px;
+            margin: 0;
+            font-size: 1.8rem;
             text-transform: uppercase;
-            letter-spacing: 2px;
+            letter-spacing: 3px;
             text-shadow: 0 0 10px var(--primary);
+            font-weight: normal;
+        }
+
+        .subtitle {
+            font-size: 0.9rem;
+            color: var(--dim);
+            margin-top: 4px;
         }
 
         .file-card {
-            border: 1px solid var(--primary);
+            border: 1px solid var(--border);
             background: var(--glass);
-            margin-bottom: 15px;
-            padding: 15px;
+            margin-bottom: 12px;
+            padding: 18px 16px;
             display: flex;
             align-items: center;
-            justify-content: space-between;
-            animation: fadeIn 0.5s ease;
+            gap: 14px;
+            animation: fadeIn 0.4s ease;
+            transition: background 0.2s;
         }
 
-        .file-info {
+        .file-card:hover {
+            background: rgba(255, 176, 0, 0.12);
+        }
+
+        .file-card__icon {
+            font-size: 2rem;
+            flex-shrink: 0;
+        }
+
+        .file-card__info {
             flex: 1;
+            overflow: hidden;
+        }
+
+        .file-card__name {
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
-            margin-right: 10px;
+            font-size: 1.15rem;
+            margin-bottom: 2px;
+        }
+
+        .file-card__hint {
+            font-size: 0.85rem;
+            color: var(--dim);
         }
 
         .download-btn {
             background: var(--primary);
             color: #000;
             border: none;
-            padding: 10px 15px;
+            padding: 12px 18px;
             font-family: inherit;
+            font-size: 1.1rem;
             font-weight: bold;
             cursor: pointer;
             text-decoration: none;
             display: inline-block;
+            flex-shrink: 0;
+            transition: background 0.2s;
+            letter-spacing: 0.05em;
         }
 
         .download-btn:hover {
             background: #fff;
         }
 
+        .download-btn:active {
+            transform: scale(0.97);
+        }
+
+        .empty-msg {
+            text-align: center;
+            color: var(--dim);
+            margin-top: 60px;
+            font-size: 1.1rem;
+        }
+
         @keyframes fadeIn {
             from {
                 opacity: 0;
-                transform: translateY(10px);
+                transform: translateY(8px);
             }
 
             to {
@@ -106,32 +159,48 @@
                 transform: translateY(0);
             }
         }
-
-        .empty-msg {
-            text-align: center;
-            font-style: italic;
-            opacity: 0.7;
-            margin-top: 50px;
-        }
     </style>
 </head>
 
 <body>
     <div class="scanlines"></div>
     <div class="container">
-        <h1>// DOWNLINK_NODE</h1>
+        <header>
+            <div class="logo">⬡</div>
+            <h1>BEAMSYNC</h1>
+            <div class="subtitle">// DOWNLINK_NODE — TAP TO SAVE</div>
+        </header>
 
         <div id="file-list">
-            <!-- Go Template will inject content here if we use pure template execution, 
-                 but for simplicity we might just replace a placeholder string or loop in Go. -->
             {{FILES}}
         </div>
     </div>
 
     <script>
-        // Heartbeat
-        setInterval(() => fetch("/heartbeat", { method: "POST" }).catch(() => { }), 1000);
+        // Token is embedded in the URL query string by Go: /download?token=XXX
+        const TOKEN = new URLSearchParams(location.search).get('token') || '';
+
+        // ── Heartbeat ────────────────────────────────────────────────────────
+        // Fires immediately on load (fast device_connected) then every 5s.
+        // On 403/401 the server has restarted; we reload to reconnect without
+        // needing a rescan.
+        let _reloading = false;
+        function heartbeat() {
+            if (_reloading) return;
+            const url = TOKEN ? `/heartbeat?token=${TOKEN}` : '/heartbeat';
+            fetch(url, { method: 'POST' })
+                .then(r => {
+                    if (r.status === 401 || r.status === 403) {
+                        _reloading = true;
+                        setTimeout(() => location.reload(), 800);
+                    }
+                })
+                .catch(() => { });
+        }
+        setInterval(heartbeat, 5000);
+        heartbeat();
     </script>
+
 </body>
 
 </html>

@@ -3,6 +3,11 @@
 # *.so
 # *.dylib
 
+# Android SDK build outputs
+*.aar
+*-sources.jar
+
+
 # Wails
 desktop/frontend/dist/
 desktop/frontend/node_modules/

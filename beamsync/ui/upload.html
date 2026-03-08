@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
@@ -13,6 +14,7 @@
             --text: #00ff41;
             --scanline: rgba(0, 255, 65, 0.05);
         }
+
         body {
             background-color: var(--bg);
             color: var(--text);
@@ -25,19 +27,22 @@
             min-height: 100vh;
             overflow-x: hidden;
         }
+
         .scanlines {
             position: fixed;
-            top: 0; left: 0; width: 100%; height: 100%;
-            background: repeating-linear-gradient(
-                0deg,
-                rgba(0,0,0,0) 0px,
-                rgba(0,0,0,0) 1px,
-                var(--scanline) 1px,
-                var(--scanline) 2px
-            );
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: repeating-linear-gradient(0deg,
+                    rgba(0, 0, 0, 0) 0px,
+                    rgba(0, 0, 0, 0) 1px,
+                    var(--scanline) 1px,
+                    var(--scanline) 2px);
             pointer-events: none;
             z-index: 0;
         }
+
         .container {
             position: relative;
             z-index: 1;
@@ -45,6 +50,7 @@
             max-width: 400px;
             text-align: center;
         }
+
         h1 {
             border-bottom: 2px solid var(--primary);
             padding-bottom: 10px;
@@ -53,6 +59,7 @@
             letter-spacing: 2px;
             text-shadow: 0 0 10px var(--primary);
         }
+
         .upload-zone {
             border: 2px dashed var(--primary);
             background: var(--glass);
@@ -62,15 +69,21 @@
             position: relative;
             transition: all 0.3s;
         }
+
         .upload-zone:active {
             background: rgba(0, 255, 65, 0.2);
         }
+
         input[type="file"] {
             position: absolute;
-            top: 0; left: 0; width: 100%; height: 100%;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
             opacity: 0;
             cursor: pointer;
         }
+
         .btn {
             background: var(--bg);
             color: var(--primary);
@@ -85,55 +98,69 @@
             box-shadow: 0 0 10px rgba(0, 255, 65, 0.2);
             transition: all 0.2s;
         }
+
         .btn:active {
             background: var(--primary);
             color: var(--bg);
             transform: scale(0.98);
         }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
         #status {
             margin-top: 20px;
             font-size: 0.9rem;
             min-height: 1.2em;
         }
+
         .file-list {
             text-align: left;
             margin-top: 10px;
             font-size: 0.8rem;
             color: #ccc;
         }
+
         .progress-container {
             width: 100%;
             background-color: rgba(0, 255, 65, 0.1);
             border: 1px solid var(--primary);
             height: 20px;
             margin-bottom: 20px;
-            display: none; /* Hidden by default */
+            display: none;
             position: relative;
         }
+
         .progress-bar {
             width: 0%;
             height: 100%;
             background-color: var(--primary);
             transition: width 0.1s linear;
         }
+
         .progress-text {
             position: absolute;
-            top: 0; left: 0; width: 100%; height: 100%;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
             display: flex;
             align-items: center;
             justify-content: center;
             font-size: 0.8rem;
             color: var(--bg);
             font-weight: bold;
-            text-shadow: none;
         }
     </style>
 </head>
+
 <body>
     <div class="scanlines"></div>
     <div class="container">
         <h1>// UPLINK_NODE</h1>
-        
+
         <div class="upload-zone">
             <input type="file" id="files" multiple onchange="updateFileList()">
             <div style="font-size: 3rem;">⬆️</div>
@@ -141,116 +168,124 @@
         </div>
 
         <div id="fileList" class="file-list"></div>
-        
-        <!-- Progress Bar Section -->
+
         <div id="progressContainer" class="progress-container">
             <div id="progressBar" class="progress-bar"></div>
             <div id="progressText" class="progress-text">0%</div>
         </div>
 
         <button class="btn" onclick="upload()">[ INITIATE UPLOAD ]</button>
-        
+
         <div id="status">>> READY_FOR_INPUT</div>
     </div>
 
     <script>
-        // Heartbeat to keep connection alive
-        setInterval(() => fetch("/heartbeat", {method: "POST"}).catch(()=>{}), 1000);
+        const TOKEN = "{{TOKEN}}";
+
+        // ── Heartbeat ───────────────────────────────────────────────────────
+        // Sends every 5s to keep the desktop watchdog alive.
+        // If the server replies 401/403 (token mismatch — server restarted),
+        // we reload the page so the new upload.html is served with a fresh
+        // token. The user never has to rescan the QR code.
+        let _reloading = false;
+        function heartbeat() {
+            if (_reloading) return;
+            fetch("/heartbeat?token=" + TOKEN, { method: "POST" })
+                .then(r => {
+                    if (r.status === 401 || r.status === 403) {
+                        _reloading = true;
+                        document.getElementById('status').innerText = '>> SERVER_TOKEN_CHANGED — RECONNECTING...';
+                        // Brief pause so the server is ready before reload
+                        setTimeout(() => location.reload(), 800);
+                    }
+                })
+                .catch(() => { }); // network down — just wait for next interval
+        }
+        setInterval(heartbeat, 5000);
+        // Run immediately on page load so desktop gets device_connected fast
+        heartbeat();
 
         function updateFileList() {
             const files = document.getElementById('files').files;
             const list = document.getElementById('fileList');
             if (files.length > 0) {
-                list.innerHTML = Array.from(files).map(f => `> ${f.name} (${(f.size/1024/1024).toFixed(2)} MB)`).join('<br>');
+                list.innerHTML = Array.from(files)
+                    .map(f => `> ${f.name} (${(f.size / 1024 / 1024).toFixed(2)} MB)`)
+                    .join('<br>');
                 document.getElementById('status').innerText = `>> ${files.length} FILE(S) SELECTED`;
             } else {
-                list.innerHTML = "";
-                document.getElementById('status').innerText = ">> READY_FOR_INPUT";
+                list.innerHTML = '';
+                document.getElementById('status').innerText = '>> READY_FOR_INPUT';
             }
         }
 
         function upload() {
             const files = document.getElementById('files').files;
             if (!files.length) {
-                document.getElementById('status').innerText = ">> ERROR: NO DATA SELECTED";
+                document.getElementById('status').innerText = '>> ERROR: NO DATA SELECTED';
                 return;
             }
-            
+
             const fd = new FormData();
-            for (let f of files) fd.append("documents", f);
-            
+            for (let f of files) fd.append('documents', f);
+
             const btn = document.querySelector('.btn');
             const progressContainer = document.getElementById('progressContainer');
             const progressBar = document.getElementById('progressBar');
             const progressText = document.getElementById('progressText');
-            const statusFn = document.getElementById('status');
-            
+            const statusEl = document.getElementById('status');
+
             btn.disabled = true;
-            btn.innerText = "[ TRANSMITTING... ]";
-            statusFn.innerText = ">> UPLOADING PACKETS...";
-            
+            btn.innerText = '[ TRANSMITTING... ]';
+            statusEl.innerText = '>> UPLOADING PACKETS...';
             progressContainer.style.display = 'block';
             progressBar.style.width = '0%';
             progressText.innerText = '0%';
 
             const xhr = new XMLHttpRequest();
-            xhr.open("POST", "/upload");
-
             const startTime = Date.now();
-            let lastLoaded = 0;
 
-            xhr.upload.onprogress = function(e) {
-                if (e.lengthComputable) {
-                    const percentComplete = (e.loaded / e.total) * 100;
-                    progressBar.style.width = percentComplete + '%';
-                    
-                    const currentTime = Date.now();
-                    const elapsedTime = (currentTime - startTime) / 1000; // in seconds
-                    
-                    // Calculate speed
-                    // Avoid division by zero and extremely volatile spikes by averaging over total time
-                    let speed = 0; 
-                    if (elapsedTime > 0) {
-                        speed = (e.loaded / 1024 / 1024) / elapsedTime; // MB/s
-                    }
+            xhr.open('POST', '/upload?token=' + TOKEN);
 
-                    progressText.innerText = `${Math.round(percentComplete)}%`;
-                    statusFn.innerText = `>> SPEED: ${speed.toFixed(2)} MB/s`;
-                }
+            xhr.upload.onprogress = function (e) {
+                if (!e.lengthComputable) return;
+                const pct = (e.loaded / e.total) * 100;
+                const elapsed = (Date.now() - startTime) / 1000;
+                const speed = elapsed > 0 ? (e.loaded / 1024 / 1024 / elapsed).toFixed(2) : '0.00';
+                progressBar.style.width = pct + '%';
+                progressText.innerText = Math.round(pct) + '%';
+                statusEl.innerText = `>> SPEED: ${speed} MB/s`;
             };
 
-            xhr.onload = function() {
-                if (xhr.status == 200) {
-                    statusFn.innerText = ">> TRANSFER COMPLETE";
-                    btn.innerText = "[ UPLOAD SUCCESS ]";
+            xhr.onload = function () {
+                if (xhr.status === 200) {
+                    statusEl.innerText = '>> TRANSFER COMPLETE';
+                    btn.innerText = '[ UPLOAD SUCCESS ]';
                     progressText.innerText = '100%';
                     progressBar.style.width = '100%';
-                    
                     setTimeout(() => {
                         btn.disabled = false;
-                        btn.innerText = "[ INITIATE UPLOAD ]";
-                        document.getElementById('files').value = "";
+                        btn.innerText = '[ INITIATE UPLOAD ]';
+                        document.getElementById('files').value = '';
                         updateFileList();
                         progressContainer.style.display = 'none';
                     }, 2000);
                 } else {
-                    statusFn.innerText = ">> ERROR: " + xhr.statusText;
+                    statusEl.innerText = '>> ERROR: ' + xhr.statusText;
                     btn.disabled = false;
-                    btn.innerText = "[ RETRY UPLOAD ]";
-                    // Keep progress bar visible on error so user sees where it failed? 
-                    // Or hide it? Let's hide it for now to reset state.
-                    // progressContainer.style.display = 'none'; 
+                    btn.innerText = '[ RETRY UPLOAD ]';
                 }
             };
 
-            xhr.onerror = function() {
-                statusFn.innerText = ">> NETWORK ERROR";
+            xhr.onerror = function () {
+                statusEl.innerText = '>> NETWORK ERROR';
                 btn.disabled = false;
-                btn.innerText = "[ RETRY UPLOAD ]";
+                btn.innerText = '[ RETRY UPLOAD ]';
             };
 
             xhr.send(fd);
         }
     </script>
 </body>
+
 </html>

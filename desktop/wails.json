@@ -10,9 +10,20 @@
     "name": "Pranav Agarkar",
     "email": "pranavagarkar8@gmail.com"
   },
+  "info": {
+    "companyName": "Pranav Agarkar",
+    "productName": "BeamSync",
+    "productVersion": "2.0.0",
+    "copyright": "Copyright © 2025 Pranav Agarkar",
+    "comments": "Fast LAN file transfer between desktop and mobile"
+  },
   "build": {
     "windows": {
-      "icon": "build/appicon/icon.ico"
+      "icon": "build/appicon/icon.ico",
+      "webviewInstallationPolicy": "installIfMissing",
+      "nsis": {
+        "installMode": "currentUser"
+      }
     },
     "darwin": {
       "icon": "build/appicon/icon.icns"
