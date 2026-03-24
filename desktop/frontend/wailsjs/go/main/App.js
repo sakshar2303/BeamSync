@@ -6,6 +6,10 @@ export function GetReceivedFiles() {
   return window['go']['main']['App']['GetReceivedFiles']();
 }
 
+export function GetSavePath() {
+  return window['go']['main']['App']['GetSavePath']();
+}
+
 export function OpenFile(arg1) {
   return window['go']['main']['App']['OpenFile'](arg1);
 }
@@ -16,6 +20,10 @@ export function PlaySound(arg1) {
 
 export function ResetApp() {
   return window['go']['main']['App']['ResetApp']();
+}
+
+export function SetSavePath() {
+  return window['go']['main']['App']['SetSavePath']();
 }
 
 export function StartReceiver() {

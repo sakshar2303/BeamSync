@@ -5,6 +5,7 @@ import (
 	"beamsync/audio"
 	"context"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -50,6 +51,52 @@ func NewApp() *App {
 	return &App{
 		eventChan: make(chan EventData, 100),
 	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONFIG PERSISTENCE — ~/.config/beamsync/config.json
+// ─────────────────────────────────────────────────────────────────────────────
+
+type configData struct {
+	SavePath string `json:"savePath"`
+}
+
+func configPath() string {
+	cfgDir, err := os.UserConfigDir()
+	if err != nil {
+		cfgDir = filepath.Join(os.TempDir(), ".config")
+	}
+	return filepath.Join(cfgDir, "beamsync", "config.json")
+}
+
+func loadConfig() configData {
+	var cfg configData
+	data, err := os.ReadFile(configPath())
+	if err != nil {
+		return cfg
+	}
+	_ = json.Unmarshal(data, &cfg)
+	return cfg
+}
+
+func saveConfig(cfg configData) error {
+	p := configPath()
+	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, data, 0644)
+}
+
+func defaultSavePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "received_files"
+	}
+	return filepath.Join(home, "Downloads", "BeamSync")
 }
 
 // startup is called when the app starts
@@ -153,7 +200,62 @@ func (a *App) makeCallback() beamsync.EventCallback {
 	}
 }
 
-// StartReceiverDefault starts the receiver using the default Downloads/BeamSync folder.
+// GetSavePath returns the current save path. Reads from config or falls back to default.
+func (a *App) GetSavePath() string {
+	if a.lastSavePath != "" {
+		return a.lastSavePath
+	}
+	cfg := loadConfig()
+	if cfg.SavePath != "" {
+		a.lastSavePath = cfg.SavePath
+		return cfg.SavePath
+	}
+	return defaultSavePath()
+}
+
+// SetSavePath opens a directory picker, persists the choice, restarts receiver, returns new URL.
+func (a *App) SetSavePath() string {
+	selection, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:            "Choose Save Folder for Received Files",
+		DefaultDirectory: a.GetSavePath(),
+	})
+	if err != nil || selection == "" {
+		return "Cancelled"
+	}
+
+	// Persist
+	cfg := loadConfig()
+	cfg.SavePath = selection
+	if err := saveConfig(cfg); err != nil {
+		fmt.Println("⚠️ Failed to save config:", err)
+	}
+	a.lastSavePath = selection
+	fmt.Printf("📁 Save path changed to: %s\n", selection)
+
+	// Restart receiver on new path
+	if a.serverApp != nil {
+		a.serverApp.Shutdown()
+		a.serverApp = nil
+	}
+
+	if err := os.MkdirAll(selection, 0755); err != nil {
+		fmt.Println("⚠️ Failed to create save directory:", err)
+		return "Error: Could not create save directory"
+	}
+
+	app, port, token := beamsync.StartServer(selection, 3000, a.makeCallback())
+	a.serverApp = app
+
+	localIP := getLocalIP()
+	a.currentIP = localIP
+	a.currentPort = port
+
+	url := fmt.Sprintf("http://%s:%s/?token=%s", localIP, port, token)
+	fmt.Println("📡 Receiver restarted on new path:", url)
+	return url
+}
+
+// StartReceiverDefault starts the receiver using the persisted save path (or default).
 func (a *App) StartReceiverDefault() string {
 	if a.serverApp != nil {
 		fmt.Println("🔄 Stopping previous receiver server...")
@@ -163,11 +265,7 @@ func (a *App) StartReceiverDefault() string {
 		a.serverApp = nil
 	}
 
-	home, err := os.UserHomeDir()
-	savePath := "received_files"
-	if err == nil {
-		savePath = filepath.Join(home, "Downloads", "BeamSync")
-	}
+	savePath := a.GetSavePath()
 	a.lastSavePath = savePath
 
 	if err := os.MkdirAll(savePath, 0755); err != nil {

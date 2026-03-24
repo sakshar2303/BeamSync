@@ -7,6 +7,8 @@
     OpenFile,
     ResetApp,
     GetReceivedFiles,
+    GetSavePath,
+    SetSavePath,
   } from "../wailsjs/go/main/App.js";
   import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime.js";
   import QRCode from "qrcode";
@@ -37,6 +39,7 @@
 
   let showSenderDialog = false;
   let isDragOver = false;
+  let savePath = ""; // persisted save directory
 
   // ── Toast system ──────────────────────────────────────────────────────────
   // Each toast: { id, msg, type }
@@ -142,6 +145,12 @@
     });
 
     await initReceiver();
+    // Load persisted save path for sidebar display
+    try {
+      savePath = await GetSavePath();
+    } catch {
+      savePath = "";
+    }
   });
 
   async function initReceiver() {
@@ -275,6 +284,25 @@
     lastProgressTime = 0;
   }
 
+  async function changeSavePath() {
+    playSound("click");
+    const result = await SetSavePath();
+    if (result === "Cancelled") {
+      toast("Folder selection cancelled", "info");
+      return;
+    }
+    if (result.startsWith("Error:")) {
+      toast("❌ " + result, "error");
+      return;
+    }
+    // SetSavePath restarts receiver and returns new URL
+    serverUrl = result;
+    generateQR(result);
+    savePath = await GetSavePath();
+    connectionState = "WAITING";
+    toast(`📁 Save path updated`, "success");
+  }
+
   async function handleDisconnectReset() {
     await resetAll();
     mode = "RECEIVE";
@@ -385,6 +413,25 @@
       <div class="net-info">
         <div class="net-label">SERVER</div>
         <div class="net-url">{displayUrl}</div>
+      </div>
+    {/if}
+
+    {#if savePath}
+      <div class="save-path-box">
+        <div class="save-path-header">
+          <span class="save-path-icon">📂</span>
+          <span class="save-path-label">SAVE TO</span>
+        </div>
+        <div class="save-path-value" title={savePath}>
+          {savePath.split('/').slice(-2).join('/')}
+        </div>
+        <button
+          class="save-path-btn"
+          on:click={changeSavePath}
+          on:mouseenter={() => playSound("blip")}
+        >
+          ✎ CHANGE
+        </button>
       </div>
     {/if}
 

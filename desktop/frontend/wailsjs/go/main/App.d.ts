@@ -4,11 +4,15 @@ import {main} from '../models';
 
 export function GetReceivedFiles():Promise<Array<main.ReceivedFile>>;
 
+export function GetSavePath():Promise<string>;
+
 export function OpenFile(arg1:string):Promise<string>;
 
 export function PlaySound(arg1:string):Promise<void>;
 
 export function ResetApp():Promise<void>;
+
+export function SetSavePath():Promise<string>;
 
 export function StartReceiver():Promise<string>;
 

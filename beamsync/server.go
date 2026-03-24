@@ -1,12 +1,15 @@
 package beamsync
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"embed"
 	"encoding/hex"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -26,6 +29,7 @@ type serverState struct {
 	mu            sync.Mutex
 	lastHeartbeat time.Time
 	isConnected   bool
+	uploading     bool // true while a file copy is actively streaming
 }
 
 func (s *serverState) markHeartbeat() (wasConnected bool) {
@@ -37,10 +41,23 @@ func (s *serverState) markHeartbeat() (wasConnected bool) {
 	return
 }
 
+// setUploading marks whether a file upload is currently streaming.
+// The watchdog will not fire device_disconnected while uploading is true.
+func (s *serverState) setUploading(v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.uploading = v
+	if v {
+		// Reset heartbeat timer so the 15s clock starts fresh when upload ends
+		s.lastHeartbeat = time.Now()
+	}
+}
+
 func (s *serverState) checkTimeout() (wasConnected bool, timedOut bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.isConnected && time.Since(s.lastHeartbeat) > 15*time.Second {
+	// Never consider it a timeout while data is actively being received
+	if s.isConnected && !s.uploading && time.Since(s.lastHeartbeat) > 15*time.Second {
 		s.isConnected = false
 		return true, true
 	}
@@ -85,6 +102,33 @@ func (pw *progressWriter) Write(p []byte) (int, error) {
 		pw.lastEmit = now
 	}
 	return n, err
+}
+
+// copyChunked reads src in large chunks before writing to dst.
+// Go's multipart.Part has an internal 4 KB bufio, so Part.Read returns ≤4 KB
+// per call regardless of the dst buffer size. Without this helper, we end up
+// making thousands of tiny Write() syscalls per second which kills throughput.
+// copyChunked accumulates those 4 KB reads into a single chunkSize Write(),
+// giving the OS large sequential disk I/O instead of random small writes.
+func copyChunked(dst io.Writer, src io.Reader, chunkSize int) (int64, error) {
+	buf := make([]byte, chunkSize)
+	var total int64
+	for {
+		n, err := io.ReadFull(src, buf)
+		if n > 0 {
+			nw, werr := dst.Write(buf[:n])
+			total += int64(nw)
+			if werr != nil {
+				return total, werr
+			}
+		}
+		if err == io.ErrUnexpectedEOF || err == io.EOF {
+			return total, nil
+		}
+		if err != nil {
+			return total, err
+		}
+	}
 }
 
 // generateToken creates a 16-byte (32 hex char) crypto-random session token.
@@ -268,36 +312,59 @@ func StartServer(uploadDir string, startPort int, callback EventCallback) (*HTTP
 			return
 		}
 
+		// Mark as uploading — prevents watchdog from firing device_disconnected
+		// during a long transfer where no heartbeats arrive.
+		state.setUploading(true)
+		defer state.setUploading(false)
+
 		// Update heartbeat on upload activity
 		state.markHeartbeat()
 
-		// 20 GB max — guard runaway clients
-		r.Body = http.MaxBytesReader(w, r.Body, 20*1024*1024*1024)
+		// 100 GB max — guard runaway clients
+		r.Body = http.MaxBytesReader(w, r.Body, 100*1024*1024*1024)
 
-		if err := r.ParseMultipartForm(32 << 20); err != nil {
-			fmt.Println("❌ Failed to parse multipart form:", err)
-			http.Error(w, "Failed to parse form", http.StatusBadRequest)
+		// ── High-throughput streaming multipart ───────────────────────────────
+		// Strategy: parse the boundary ourselves so we can wrap r.Body in a
+		// large bufio.Reader before it reaches the multipart parser.
+		// Without this, multipart.Reader uses a 4 KB internal buffer and every
+		// Part.Read() call returns ≤4 KB — giving us thousands of tiny disk
+		// writes per second and killing throughput on large files.
+		contentType := r.Header.Get("Content-Type")
+		mediaType, params, ctErr := mime.ParseMediaType(contentType)
+		if ctErr != nil || !strings.HasPrefix(mediaType, "multipart/") {
+			fmt.Println("❌ Invalid Content-Type:", contentType)
+			http.Error(w, "Expected multipart/form-data", http.StatusBadRequest)
 			return
 		}
+		boundary := params["boundary"]
 
-		files := r.MultipartForm.File["documents"]
-		if len(files) == 0 {
-			http.Error(w, "No files uploaded", http.StatusBadRequest)
-			return
-		}
+		// 8 MB network read buffer — reduces TCP recv() syscalls dramatically.
+		netReader := bufio.NewReaderSize(r.Body, 8*1024*1024)
+		mr := multipart.NewReader(netReader, boundary)
 
-		fmt.Printf("📦 Processing %d file(s)\n", len(files))
-
-		for i, fileHeader := range files {
-			fmt.Printf("📄 Processing file #%d: %s\n", i+1, fileHeader.Filename)
-
-			file, err := fileHeader.Open()
+		fileCount := 0
+		for {
+			part, err := mr.NextPart()
+			if err == io.EOF {
+				break
+			}
 			if err != nil {
-				fmt.Println("❌ Failed to open file:", err)
+				fmt.Println("❌ Multipart read error:", err)
+				http.Error(w, "Multipart read error", http.StatusBadRequest)
+				return
+			}
+
+			// Only process file parts (skip non-file form fields)
+			filename := part.FileName()
+			if filename == "" {
+				part.Close()
 				continue
 			}
 
-			rawName := filepath.Base(fileHeader.Filename)
+			fileCount++
+			fmt.Printf("📄 Processing file #%d: %s\n", fileCount, filename)
+
+			rawName := filepath.Base(filename)
 			if rawName == "" || rawName == "." {
 				rawName = fmt.Sprintf("upload_%d.bin", time.Now().Unix())
 			}
@@ -310,28 +377,36 @@ func StartServer(uploadDir string, startPort int, callback EventCallback) (*HTTP
 			dst, err := os.Create(dstPath)
 			if err != nil {
 				fmt.Println("❌ File creation error:", err)
-				file.Close()
+				part.Close()
 				continue
 			}
 
-			// Progress-aware copy — emits every 200ms to avoid flooding
+			// 8 MB disk write buffer — turns thousands of 4 KB part.Read() returns
+			// into large sequential disk flushes.
+			diskBuf := bufio.NewWriterSize(dst, 8*1024*1024)
+
+			// progress tracking wraps the buffered disk writer
 			pw := &progressWriter{
-				w:           dst,
-				total:       fileHeader.Size,
+				w:           diskBuf,
+				total:       -1, // unknown until fully received
 				filename:    savedName,
 				emit:        emit,
-				minInterval: 200 * time.Millisecond,
+				minInterval: 500 * time.Millisecond,
 			}
-			written, err := io.Copy(pw, file)
+			// copyChunked accumulates the 4 KB part reads into 8 MB writes,
+			// which, combined with diskBuf, means real disk I/O happens in
+			// 8 MB sequential bursts instead of random 4 KB writes.
+			written, err := copyChunked(pw, part, 8*1024*1024)
+			diskBuf.Flush() // flush any remaining bytes in the write buffer
 			dst.Close()
-			file.Close()
+			part.Close()
 
 			if err != nil {
 				fmt.Println("❌ Copy error:", err)
 				continue
 			}
 
-			// Final 100% progress event
+			// Final 100% progress event (written == total now that we're done)
 			emit("upload_progress", fmt.Sprintf("%s|%d|%d", savedName, written, written))
 			fmt.Printf("✅ File saved: %s (%d bytes)\n", savedName, written)
 
@@ -339,6 +414,11 @@ func StartServer(uploadDir string, startPort int, callback EventCallback) (*HTTP
 				time.Sleep(100 * time.Millisecond)
 				emit("file_received", fname)
 			}(savedName)
+		}
+
+		if fileCount == 0 {
+			http.Error(w, "No files uploaded", http.StatusBadRequest)
+			return
 		}
 
 		fmt.Println("✅ Upload handler completed")
@@ -370,9 +450,9 @@ func StartServer(uploadDir string, startPort int, callback EventCallback) (*HTTP
 
 	srv := &http.Server{
 		Handler:      mux,
-		ReadTimeout:  10 * time.Minute,
-		WriteTimeout: 10 * time.Minute,
-		IdleTimeout:  30 * time.Second,
+		ReadTimeout:  4 * time.Hour, // support 100 GB over slow Wi-Fi (~7 MB/s)
+		WriteTimeout: 4 * time.Hour,
+		IdleTimeout:  60 * time.Second,
 	}
 	httpServer := &HTTPServer{server: srv, cancel: cancel}
 

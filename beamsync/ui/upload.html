@@ -191,10 +191,12 @@
         let _uploading = false; // Guard against heartbeats stalling behind large file uploads
 
         function heartbeat() {
-            if (_reloading || _uploading) return;
+            if (_reloading) return;
             fetch("/heartbeat?token=" + TOKEN, { method: "POST" })
                 .then(r => {
                     if (r.status === 401 || r.status === 403) {
+                        // Never reload while an upload is in flight — it would abort the transfer
+                        if (_uploading) return;
                         _reloading = true;
                         document.getElementById('status').innerText = '>> SERVER_TOKEN_CHANGED — RECONNECTING...';
                         // Brief pause so the server is ready before reload
