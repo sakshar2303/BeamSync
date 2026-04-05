@@ -148,6 +148,101 @@
             font-size: 1.1rem;
         }
 
+        .progress-block {
+            border: 1px solid var(--border);
+            background: var(--glass);
+            padding: 16px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .progress-block.active {
+            display: block;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .progress-header {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .progress-icon {
+            font-size: 1.5rem;
+            flex-shrink: 0;
+        }
+
+        .progress-info {
+            flex: 1;
+        }
+
+        .progress-name {
+            font-size: 1.1rem;
+            font-weight: bold;
+            margin-bottom: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .progress-meta {
+            font-size: 0.85rem;
+            color: var(--dim);
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+
+        .progress-meta__item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .speed-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            font-weight: bold;
+        }
+
+        .speed-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+
+        .progress-bar-track {
+            height: 8px;
+            background: rgba(255, 176, 0, 0.1);
+            border: 1px solid var(--border);
+            margin-bottom: 8px;
+            overflow: hidden;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #ffb000, #ffc833);
+            transition: width 0.2s linear;
+            box-shadow: 0 0 10px rgba(255, 176, 0, 0.5);
+        }
+
+        .progress-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.9rem;
+            color: var(--dim);
+        }
+
+        .progress-percentage {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: var(--primary);
+        }
+
         @keyframes fadeIn {
             from {
                 opacity: 0;
@@ -171,6 +266,34 @@
             <div class="subtitle">// DOWNLINK_NODE — TAP TO SAVE</div>
         </header>
 
+        <div id="progress-container" class="progress-block">
+            <div class="progress-header">
+                <span class="progress-icon">⬇️</span>
+                <div class="progress-info">
+                    <div class="progress-name" id="progress-filename">—</div>
+                    <div class="progress-meta">
+                        <div class="progress-meta__item">
+                            <span id="progress-size">0.00 MB / 0.00 MB</span>
+                        </div>
+                        <div class="progress-meta__item">
+                            <span class="speed-indicator">
+                                <span class="speed-dot" id="speed-dot"></span>
+                                <span id="progress-speed">0.00 MB/s</span>
+                            </span>
+                        </div>
+                        <div class="progress-meta__item">
+                            <span>⏱️ <span id="progress-elapsed">0s</span></span>
+                            <span>⌛ <span id="progress-remaining">—</span></span>
+                        </div>
+                    </div>
+                </div>
+                <div class="progress-percentage"><span id="progress-pct">0</span>%</div>
+            </div>
+            <div class="progress-bar-track">
+                <div class="progress-bar-fill" id="progress-bar" style="width: 0%"></div>
+            </div>
+        </div>
+
         <div id="file-list">
             {{FILES}}
         </div>
@@ -179,6 +302,145 @@
     <script>
         // Token is embedded directly into the HTML by the Go server:
         const TOKEN = "{{TOKEN}}";
+
+        // ── Progress tracking state ──────────────────────────────────────────
+        let progressState = {
+            startTime: 0,
+            lastUpdateTime: 0,
+            lastBytes: 0,
+            speedHistory: [],
+        };
+
+        // Helper to format time
+        const formatTime = (seconds) => {
+            if (isNaN(seconds) || !isFinite(seconds)) return "—";
+            if (seconds < 0) return "—";
+            if (seconds < 60) return `${Math.round(seconds)}s`;
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.round(seconds % 60);
+            if (mins < 60) return `${mins}m ${secs}s`;
+            const hours = Math.floor(mins / 60);
+            const remainMins = mins % 60;
+            return `${hours}h ${remainMins}m`;
+        };
+
+        // Helper to get speed color
+        const getSpeedColor = (speedMBps) => {
+            if (speedMBps > 10) return "#00ff41"; // Green
+            if (speedMBps > 5) return "#ffb000"; // Orange
+            return "#ff4444"; // Red
+        };
+
+        // Helper to smooth speed using rolling average
+        const smoothSpeed = (currentSpeed) => {
+            progressState.speedHistory.push(currentSpeed);
+            if (progressState.speedHistory.length > 10) progressState.speedHistory.shift();
+            return progressState.speedHistory.reduce((a, b) => a + b, 0) / progressState.speedHistory.length;
+        };
+
+        // Update progress display
+        const updateProgress = (filename, loaded, total) => {
+            const container = document.getElementById('progress-container');
+            container.classList.add('active');
+
+            const now = performance.now();
+
+            // Initialize on first call
+            if (progressState.startTime === 0) {
+                progressState.startTime = now;
+                progressState.lastUpdateTime = now;
+                progressState.lastBytes = 0;
+            }
+
+            // Calculate metrics
+            const elapsed = (now - progressState.startTime) / 1000;
+            const dt = (now - progressState.lastUpdateTime) / 1000;
+            const instantSpeed = dt > 0 ? (loaded - progressState.lastBytes) / dt / 1048576 : 0;
+            const smoothedSpeed = smoothSpeed(Math.max(0, instantSpeed));
+            const percent = total > 0 ? Math.round((loaded / total) * 100) : 0;
+
+            // Calculate ETA
+            let timeRemaining = "—";
+            if (smoothedSpeed > 0) {
+                const remainingBytes = total - loaded;
+                const secondsRemaining = remainingBytes / (smoothedSpeed * 1048576);
+                timeRemaining = formatTime(secondsRemaining);
+            }
+
+            // Update UI
+            document.getElementById('progress-filename').textContent = filename;
+            document.getElementById('progress-size').textContent = 
+                `${(loaded / 1048576).toFixed(2)} MB / ${(total / 1048576).toFixed(2)} MB`;
+            document.getElementById('progress-speed').textContent = `${Math.max(0, smoothedSpeed).toFixed(2)} MB/s`;
+            document.getElementById('progress-pct').textContent = percent;
+            document.getElementById('progress-bar').style.width = `${Math.min(100, percent)}%`;
+            document.getElementById('progress-bar').style.backgroundColor = getSpeedColor(smoothedSpeed);
+            document.getElementById('speed-dot').style.backgroundColor = getSpeedColor(smoothedSpeed);
+            document.getElementById('progress-elapsed').textContent = formatTime(elapsed);
+            document.getElementById('progress-remaining').textContent = timeRemaining;
+
+            progressState.lastUpdateTime = now;
+            progressState.lastBytes = loaded;
+        };
+
+        // Override the startDownload function to track progress
+        window.startDownload = function(url) {
+            progressState = {
+                startTime: 0,
+                lastUpdateTime: 0,
+                lastBytes: 0,
+                speedHistory: [],
+            };
+
+            const xhr = new XMLHttpRequest();
+            
+            xhr.addEventListener('loadstart', () => {
+                const filename = url.split('/').pop().split('?')[0] || 'file';
+                updateProgress(filename, 0, xhr.total || 0);
+            });
+
+            xhr.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    const filename = url.split('/').pop().split('?')[0] || 'file';
+                    updateProgress(filename, e.loaded, e.total);
+                }
+            });
+
+            xhr.addEventListener('loadend', () => {
+                if (xhr.status === 200) {
+                    // Download complete - create blob and trigger download
+                    const blob = xhr.response;
+                    const filename = url.split('/').pop().split('?')[0] || 'file';
+                    const link = document.createElement('a');
+                    link.href = window.URL.createObjectURL(blob);
+                    link.download = filename;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    window.URL.revokeObjectURL(link.href);
+
+                    // Hide progress after 2 seconds
+                    setTimeout(() => {
+                        document.getElementById('progress-container').classList.remove('active');
+                        progressState = {
+                            startTime: 0,
+                            lastUpdateTime: 0,
+                            lastBytes: 0,
+                            speedHistory: [],
+                        };
+                    }, 2000);
+                }
+            });
+
+            xhr.addEventListener('error', () => {
+                document.getElementById('progress-container').classList.remove('active');
+                alert('Download failed');
+            });
+
+            xhr.responseType = 'blob';
+            xhr.open('GET', url);
+            xhr.send();
+        };
 
         // ── Heartbeat ────────────────────────────────────────────────────────
         // Fires immediately on load (fast device_connected) then every 5s.
@@ -200,7 +462,3 @@
         setInterval(heartbeat, 5000);
         heartbeat();
     </script>
-
-</body>
-
-</html>
