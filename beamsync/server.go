@@ -412,7 +412,7 @@ func StartServer(uploadDir string, startPort int, callback EventCallback) (*HTTP
 			// progress tracking wraps the buffered disk writer
 			pw := &progressWriter{
 				w:           diskBuf,
-				total:       -1, // unknown until fully received
+				total:       r.ContentLength, // reads real size from HTTP Content-Length header
 				filename:    savedName,
 				emit:        emit,
 				minInterval: 500 * time.Millisecond,
