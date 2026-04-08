@@ -68,6 +68,7 @@
             border-radius: 4px;
             position: relative;
             transition: all 0.3s;
+            overflow: hidden; /* prevents file input from bleeding outside on iOS */
         }
 
         .upload-zone:active {
@@ -82,6 +83,8 @@
             height: 100%;
             opacity: 0;
             cursor: pointer;
+            -webkit-appearance: none; /* iOS Safari reset */
+            appearance: none;
         }
 
         .btn {
@@ -97,6 +100,10 @@
             margin-bottom: 20px;
             box-shadow: 0 0 10px rgba(0, 255, 65, 0.2);
             transition: all 0.2s;
+            touch-action: manipulation; /* removes 300ms tap delay on iOS */
+            -webkit-tap-highlight-color: transparent;
+            position: relative;
+            z-index: 10; /* ensure button stays above any invisible overlays */
         }
 
         .btn:active {
@@ -162,7 +169,7 @@
         <h1>// UPLINK_NODE</h1>
 
         <div class="upload-zone">
-            <input type="file" id="files" multiple onchange="updateFileList()">
+            <input type="file" id="files" multiple accept="*/*" onchange="updateFileList()">
             <div style="font-size: 3rem;">⬆️</div>
             <p>TAP TO SELECT DATA</p>
         </div>
@@ -230,7 +237,7 @@
                 return;
             }
 
-            _uploading = true; // Pause background heartbeats
+            _uploading = true;
 
             const fd = new FormData();
             for (let f of files) fd.append('documents', f);
@@ -243,10 +250,10 @@
 
             btn.disabled = true;
             btn.innerText = '[ TRANSMITTING... ]';
-            statusEl.innerText = '>> UPLOADING PACKETS...';
+            statusEl.innerText = '>> UPLOADING... DO NOT CLOSE THIS PAGE';
             progressContainer.style.display = 'block';
-            progressBar.style.width = '0%';
-            progressText.innerText = '0%';
+            progressBar.style.width = '5%'; // show immediately so user knows it started
+            progressText.innerText = 'Starting...';
 
             const xhr = new XMLHttpRequest();
             const startTime = Date.now();
@@ -254,16 +261,27 @@
             xhr.open('POST', '/upload?token=' + TOKEN);
 
             xhr.upload.onprogress = function (e) {
-                if (!e.lengthComputable) return;
-                const pct = (e.loaded / e.total) * 100;
-                const elapsed = (Date.now() - startTime) / 1000;
-                const speed = elapsed > 0 ? (e.loaded / 1024 / 1024 / elapsed).toFixed(2) : '0.00';
-                progressBar.style.width = pct + '%';
-                progressText.innerText = Math.round(pct) + '%';
-                statusEl.innerText = `>> SPEED: ${speed} MB/s`;
+                const elapsed = Math.max((Date.now() - startTime) / 1000, 0.001);
+                const speed = (e.loaded / 1024 / 1024 / elapsed).toFixed(2);
+                const sentMB = (e.loaded / 1024 / 1024).toFixed(1);
+
+                if (e.lengthComputable && e.total > 0) {
+                    // Normal: total size is known
+                    const pct = Math.round((e.loaded / e.total) * 100);
+                    progressBar.style.width = pct + '%';
+                    progressBar.style.opacity = '1';
+                    progressText.innerText = pct + '%';
+                } else {
+                    // iOS fallback: Photos/HEIC/HEVC — total unknown, show bytes sent
+                    progressBar.style.width = '100%';
+                    progressBar.style.opacity = '0.4';
+                    progressText.innerText = sentMB + ' MB sent';
+                }
+                statusEl.innerText = `>> ${speed} MB/s — DO NOT CLOSE THIS PAGE`;
             };
 
             xhr.onload = function () {
+                progressBar.style.opacity = '1';
                 if (xhr.status === 200) {
                     statusEl.innerText = '>> TRANSFER COMPLETE';
                     btn.innerText = '[ UPLOAD SUCCESS ]';
@@ -275,10 +293,10 @@
                         document.getElementById('files').value = '';
                         updateFileList();
                         progressContainer.style.display = 'none';
-                        _uploading = false; // Resume heartbeats securely after UI reset
-                    }, 2000);
+                        _uploading = false;
+                    }, 3000);
                 } else {
-                    statusEl.innerText = '>> ERROR: ' + xhr.statusText;
+                    statusEl.innerText = '>> ERROR ' + xhr.status + ': ' + (xhr.statusText || 'Server error');
                     btn.disabled = false;
                     btn.innerText = '[ RETRY UPLOAD ]';
                     _uploading = false;
@@ -286,11 +304,21 @@
             };
 
             xhr.onerror = function () {
-                statusEl.innerText = '>> NETWORK ERROR';
+                progressContainer.style.display = 'none';
+                statusEl.innerText = '>> NETWORK ERROR — Are both devices on the same WiFi?';
                 btn.disabled = false;
                 btn.innerText = '[ RETRY UPLOAD ]';
                 _uploading = false;
             };
+
+            xhr.ontimeout = function () {
+                statusEl.innerText = '>> TIMEOUT — Connection dropped. Try again.';
+                btn.disabled = false;
+                btn.innerText = '[ RETRY UPLOAD ]';
+                _uploading = false;
+            };
+
+            xhr.timeout = 4 * 60 * 60 * 1000; // 4 hours — matches server timeout
 
             xhr.send(fd);
         }
