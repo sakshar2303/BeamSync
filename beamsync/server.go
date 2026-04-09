@@ -2,10 +2,12 @@ package beamsync
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"embed"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
@@ -14,8 +16,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,10 +30,10 @@ var uiFS embed.FS
 
 // serverState holds per-instance connection tracking (no more package-level globals).
 type serverState struct {
-	mu            sync.Mutex
-	lastHeartbeat time.Time
-	isConnected   bool
-	uploading     bool // true while a file copy is actively streaming
+	mu             sync.Mutex
+	lastHeartbeat  time.Time
+	isConnected    bool
+	uploadingCount int32 // atomic: number of files currently being written
 }
 
 func (s *serverState) markHeartbeat() (wasConnected bool) {
@@ -41,23 +45,27 @@ func (s *serverState) markHeartbeat() (wasConnected bool) {
 	return
 }
 
-// setUploading marks whether a file upload is currently streaming.
-// The watchdog will not fire device_disconnected while uploading is true.
-func (s *serverState) setUploading(v bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.uploading = v
-	if v {
-		// Reset heartbeat timer so the 15s clock starts fresh when upload ends
+// beginUpload increments the in-flight write counter.
+// The watchdog will not fire device_disconnected while any write is in flight.
+func (s *serverState) beginUpload() {
+	if atomic.AddInt32(&s.uploadingCount, 1) == 1 {
+		// First write starting — reset heartbeat so the 15s clock restarts when all finish
+		s.mu.Lock()
 		s.lastHeartbeat = time.Now()
+		s.mu.Unlock()
 	}
+}
+
+// endUpload decrements the in-flight write counter.
+func (s *serverState) endUpload() {
+	atomic.AddInt32(&s.uploadingCount, -1)
 }
 
 func (s *serverState) checkTimeout() (wasConnected bool, timedOut bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Never consider it a timeout while data is actively being received
-	if s.isConnected && !s.uploading && time.Since(s.lastHeartbeat) > 15*time.Second {
+	// Never consider it a timeout while data is actively being received/written
+	if s.isConnected && atomic.LoadInt32(&s.uploadingCount) == 0 && time.Since(s.lastHeartbeat) > 15*time.Second {
 		s.isConnected = false
 		return true, true
 	}
@@ -153,6 +161,88 @@ func copyChunked(dst io.Writer, src io.Reader, chunkSize int) (int64, error) {
 			return total, err
 		}
 	}
+}
+
+// ── Concurrent write pipeline ─────────────────────────────────────────────────
+
+// writeJob is a unit of work dispatched from the multipart-parsing goroutine
+// to a disk-write worker. Only small files (≤64 MB) are dispatched this way;
+// large files are written synchronously on the main goroutine.
+type writeJob struct {
+	dstPath   string
+	savedName string
+	totalSize int64
+	buf       []byte // file data fully buffered in RAM
+}
+
+// writeWorkerCount is the number of goroutines writing files to disk in parallel.
+const writeWorkerCount = 3
+
+// largeFileThreshold is the maximum file size to buffer fully in RAM.
+// Files larger than this are streamed directly to disk.
+const largeFileThreshold = 64 * 1024 * 1024 // 64 MB
+
+// startWriteWorkers launches writeWorkerCount goroutines that drain jobs and
+// write files to disk. Returns a WaitGroup the caller can Wait() on.
+func startWriteWorkers(
+	jobs <-chan writeJob,
+	state *serverState,
+	emit func(string, string),
+) *sync.WaitGroup {
+	var wg sync.WaitGroup
+	for i := 0; i < writeWorkerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				writeFileToDisk(job, state, emit)
+			}
+		}()
+	}
+	return &wg
+}
+
+// writeFileToDisk performs the actual file write for one job and emits events.
+// Only small files (fully buffered in buf) are dispatched here.
+func writeFileToDisk(job writeJob, state *serverState, emit func(string, string)) {
+	state.beginUpload()
+	defer state.endUpload()
+
+	dst, err := os.Create(job.dstPath)
+	if err != nil {
+		fmt.Println("❌ File creation error:", err)
+		return
+	}
+	defer dst.Close()
+
+	// 8 MB disk write buffer for large sequential I/O
+	diskBuf := bufio.NewWriterSize(dst, 8*1024*1024)
+
+	// Data is already in RAM — one large write into the buffered writer
+	pw := &progressWriter{
+		w:           diskBuf,
+		total:       int64(len(job.buf)),
+		filename:    job.savedName,
+		emit:        emit,
+		minInterval: 200 * time.Millisecond,
+	}
+	n, werr := pw.Write(job.buf)
+	written := int64(n)
+	if werr != nil {
+		fmt.Println("❌ Write error:", werr)
+	}
+
+	if flushErr := diskBuf.Flush(); flushErr != nil {
+		fmt.Println("❌ Disk flush error:", flushErr)
+	}
+
+	emit("upload_progress", fmt.Sprintf("%s|%d|%d", job.savedName, written, written))
+	fmt.Printf("✅ File saved: %s (%d bytes)\n", job.savedName, written)
+
+	go func(fname string) {
+		time.Sleep(100 * time.Millisecond)
+		emit("file_received", fname)
+	}(job.savedName)
 }
 
 // generateToken creates a 16-byte (32 hex char) crypto-random session token.
@@ -336,11 +426,6 @@ func StartServer(uploadDir string, startPort int, callback EventCallback) (*HTTP
 			return
 		}
 
-		// Mark as uploading — prevents watchdog from firing device_disconnected
-		// during a long transfer where no heartbeats arrive.
-		state.setUploading(true)
-		defer state.setUploading(false)
-
 		// Update heartbeat on upload activity
 		state.markHeartbeat()
 
@@ -348,11 +433,6 @@ func StartServer(uploadDir string, startPort int, callback EventCallback) (*HTTP
 		r.Body = http.MaxBytesReader(w, r.Body, 100*1024*1024*1024)
 
 		// ── High-throughput streaming multipart ───────────────────────────────
-		// Strategy: parse the boundary ourselves so we can wrap r.Body in a
-		// large bufio.Reader before it reaches the multipart parser.
-		// Without this, multipart.Reader uses a 4 KB internal buffer and every
-		// Part.Read() call returns ≤4 KB — giving us thousands of tiny disk
-		// writes per second and killing throughput on large files.
 		contentType := r.Header.Get("Content-Type")
 		mediaType, params, ctErr := mime.ParseMediaType(contentType)
 		if ctErr != nil || !strings.HasPrefix(mediaType, "multipart/") {
@@ -366,7 +446,15 @@ func StartServer(uploadDir string, startPort int, callback EventCallback) (*HTTP
 		netReader := bufio.NewReaderSize(r.Body, 8*1024*1024)
 		mr := multipart.NewReader(netReader, boundary)
 
+		// ── Concurrent write pipeline ─────────────────────────────────────────
+		jobs := make(chan writeJob, writeWorkerCount)
+		wg := startWriteWorkers(jobs, state, emit)
+
 		fileCount := 0
+		var parseErr error
+		// Map of filename -> size in bytes, provided by the mobile client manifest
+		fileSizes := make(map[string]int64)
+
 		for {
 			part, err := mr.NextPart()
 			if err == io.EOF {
@@ -374,12 +462,32 @@ func StartServer(uploadDir string, startPort int, callback EventCallback) (*HTTP
 			}
 			if err != nil {
 				fmt.Println("❌ Multipart read error:", err)
-				http.Error(w, "Multipart read error", http.StatusBadRequest)
-				return
+				parseErr = err
+				break
 			}
 
-			// Only process file parts (skip non-file form fields)
+			formName := part.FormName()
 			filename := part.FileName()
+
+			// ── Case A: Metadata Manifest ─────────────────────────────────────
+			// The mobile UI sends a JSON manifest of all files in this batch
+			// as the first field. We use this to get accurate 'total' sizes.
+			if formName == "beam_manifest" && filename == "" {
+				var manifest []struct {
+					Name string `json:"name"`
+					Size int64  `json:"size"`
+				}
+				if err := json.NewDecoder(part).Decode(&manifest); err == nil {
+					for _, f := range manifest {
+						fileSizes[f.Name] = f.Size
+					}
+					fmt.Printf("📦 Manifest received: %d files registered\n", len(manifest))
+				}
+				part.Close()
+				continue
+			}
+
+			// ── Case B: File Part ─────────────────────────────────────────────
 			if filename == "" {
 				part.Close()
 				continue
@@ -393,51 +501,102 @@ func StartServer(uploadDir string, startPort int, callback EventCallback) (*HTTP
 				rawName = fmt.Sprintf("upload_%d.bin", time.Now().Unix())
 			}
 
-			// Auto-rename on conflict
+			// Auto-rename on conflict (safe to do on main goroutine — sequential)
 			dstPath := autoRenamePath(uploadDir, rawName)
 			savedName := filepath.Base(dstPath)
-			fmt.Printf("💾 Saving to: %s\n", dstPath)
+			fmt.Printf("💾 Queuing write: %s\n", dstPath)
 
-			dst, err := os.Create(dstPath)
-			if err != nil {
-				fmt.Println("❌ File creation error:", err)
+			// Read up to largeFileThreshold bytes to determine dispatch strategy.
+			var buf bytes.Buffer
+			buf.Grow(largeFileThreshold)
+			readLimit := int64(largeFileThreshold)
+			n, readErr := io.CopyN(&buf, part, readLimit)
+
+			if readErr == nil && n == readLimit {
+				// Large file — write synchronously on main goroutine to avoid
+				// racing on the shared bufio.Reader (netReader).
+				fmt.Printf("📦 Large file — writing synchronously: %s\n", savedName)
+				state.beginUpload()
+
+				dst, createErr := os.Create(dstPath)
+				if createErr != nil {
+					fmt.Println("❌ File creation error:", createErr)
+					io.Copy(io.Discard, part) // must drain before NextPart()
+					part.Close()
+					state.endUpload()
+					continue
+				}
+
+				diskBuf := bufio.NewWriterSize(dst, 8*1024*1024)
+				estTotal := int64(-1)
+
+				// Order of size preference:
+				// 1. Explicit size from manifest (sent by mobile JS)
+				// 2. Part header Content-Length
+				// 3. Request Content-Length (only accurate for single-file uploads)
+				if sz, ok := fileSizes[filename]; ok {
+					estTotal = sz
+				} else if cl, _ := strconv.ParseInt(part.Header.Get("Content-Length"), 10, 64); cl > 0 {
+					estTotal = cl
+				} else if r.ContentLength > 0 && r.ContentLength < 2*1024*1024*1024 {
+					estTotal = r.ContentLength
+				}
+
+				if estTotal > 0 {
+					fmt.Printf("📊 Total size for %s: %d bytes\n", savedName, estTotal)
+				}
+
+				lpw := &progressWriter{
+					w:           diskBuf,
+					total:       estTotal,
+					filename:    savedName,
+					emit:        emit,
+					minInterval: 500 * time.Millisecond,
+				}
+				// Write the already-buffered prefix first.
+				prefixBytes := buf.Bytes()
+				lpw.Write(prefixBytes)
+				// Stream the remainder from the network.
+				lWritten, lErr := copyChunked(lpw, part, 8*1024*1024)
+				lWritten += int64(len(prefixBytes))
+				diskBuf.Flush()
+				dst.Close()
 				part.Close()
-				continue
+				state.endUpload()
+
+				if lErr != nil {
+					fmt.Println("❌ Large file copy error:", lErr)
+					continue
+				}
+				emit("upload_progress", fmt.Sprintf("%s|%d|%d", savedName, lWritten, lWritten))
+				fmt.Printf("✅ Large file saved: %s (%d bytes)\n", savedName, lWritten)
+				go func(fname string) {
+					time.Sleep(100 * time.Millisecond)
+					emit("file_received", fname)
+				}(savedName)
+			} else {
+				// Small file (or EOF before threshold): fully buffered — dispatch to worker.
+				part.Close()
+				if readErr != nil && readErr != io.EOF {
+					fmt.Println("❌ Part read error:", readErr)
+					continue
+				}
+				jobs <- writeJob{
+					dstPath:   dstPath,
+					savedName: savedName,
+					totalSize: int64(buf.Len()),
+					buf:       buf.Bytes(),
+				}
 			}
+		}
 
-			// 8 MB disk write buffer — turns thousands of 4 KB part.Read() returns
-			// into large sequential disk flushes.
-			diskBuf := bufio.NewWriterSize(dst, 8*1024*1024)
+		// Signal workers that no more jobs are coming, then wait for all writes.
+		close(jobs)
+		wg.Wait()
 
-			// progress tracking wraps the buffered disk writer
-			pw := &progressWriter{
-				w:           diskBuf,
-				total:       r.ContentLength, // reads real size from HTTP Content-Length header
-				filename:    savedName,
-				emit:        emit,
-				minInterval: 500 * time.Millisecond,
-			}
-			// copyChunked accumulates the 4 KB part reads into 8 MB writes,
-			// which, combined with diskBuf, means real disk I/O happens in
-			// 8 MB sequential bursts instead of random 4 KB writes.
-			written, err := copyChunked(pw, part, 8*1024*1024)
-			diskBuf.Flush() // flush any remaining bytes in the write buffer
-			dst.Close()
-			part.Close()
-
-			if err != nil {
-				fmt.Println("❌ Copy error:", err)
-				continue
-			}
-
-			// Final 100% progress event (written == total now that we're done)
-			emit("upload_progress", fmt.Sprintf("%s|%d|%d", savedName, written, written))
-			fmt.Printf("✅ File saved: %s (%d bytes)\n", savedName, written)
-
-			go func(fname string) {
-				time.Sleep(100 * time.Millisecond)
-				emit("file_received", fname)
-			}(savedName)
+		if parseErr != nil {
+			http.Error(w, "Multipart read error", http.StatusBadRequest)
+			return
 		}
 
 		if fileCount == 0 {

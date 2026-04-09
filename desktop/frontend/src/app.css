@@ -687,10 +687,22 @@ button {
 
 .transfer-bar-fill {
     height: 100%;
-    background: repeating-linear-gradient(45deg, var(--primary), var(--primary) 8px, rgba(0, 0, 0, 0.25) 8px, rgba(0, 0, 0, 0.25) 16px);
-    animation: stripe 0.7s linear infinite;
-    will-change: background-position;
-    transition: width 0.22s linear, background-color 0.3s ease;
+    background: var(--primary);
+    transition: width 0.3s ease-out;
+}
+
+.transfer-bar-fill.indeterminate {
+    animation: pulseIndeterminate 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes pulseIndeterminate {
+    0% {
+        opacity: 0.55;
+    }
+
+    100% {
+        opacity: 1;
+    }
 }
 
 .transfer-meta {
@@ -1387,4 +1399,94 @@ button {
     to {
         transform: rotate(360deg);
     }
+}
+
+/* ─── Sound toggle button ─────────────────────────────────────────────────── */
+.nav-btn--sound {
+    margin: 4px 10px 0;
+    opacity: 0.75;
+    transition: opacity 0.15s, color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.nav-btn--sound:hover {
+    opacity: 1;
+}
+
+/* ─── Transfer-complete tick overlay ──────────────────────────────────── */
+.tick-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 900;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 22px;
+    pointer-events: none;
+    animation: tick-overlay-in 0.25s ease forwards,
+        tick-overlay-out 0.4s ease 2.15s forwards;
+}
+
+@keyframes tick-overlay-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+@keyframes tick-overlay-out {
+    from { opacity: 1; }
+    to   { opacity: 0; }
+}
+
+.tick-ring {
+    width: 110px;
+    height: 110px;
+    filter: drop-shadow(0 0 18px var(--primary));
+    animation: tick-ring-pop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) 0.05s both;
+}
+
+@keyframes tick-ring-pop {
+    from { transform: scale(0.55); opacity: 0; }
+    to   { transform: scale(1);    opacity: 1; }
+}
+
+.tick-svg {
+    width: 100%;
+    height: 100%;
+}
+
+/* Circle draw-in */
+.tick-circle {
+    stroke: var(--primary);
+    stroke-dasharray: 160;
+    stroke-dashoffset: 160;
+    animation: tick-circle-draw 0.45s ease 0.1s forwards;
+}
+
+@keyframes tick-circle-draw {
+    to { stroke-dashoffset: 0; }
+}
+
+/* Check draw-in — starts after circle completes */
+.tick-check {
+    stroke: var(--primary);
+    stroke-dasharray: 36;
+    stroke-dashoffset: 36;
+    animation: tick-check-draw 0.3s ease 0.5s forwards;
+}
+
+@keyframes tick-check-draw {
+    to { stroke-dashoffset: 0; }
+}
+
+.tick-label {
+    font-size: 1.5rem;
+    letter-spacing: 0.18em;
+    color: var(--primary);
+    text-shadow: 0 0 10px var(--primary);
+    animation: tick-label-in 0.3s ease 0.6s both;
+}
+
+@keyframes tick-label-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0);   }
 }

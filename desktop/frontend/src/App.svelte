@@ -10,9 +10,9 @@
     GetSavePath,
     SetSavePath,
   } from "../wailsjs/go/main/App.js";
-  import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime.js";
+  import { EventsOn, EventsOffAll, BrowserOpenURL } from "../wailsjs/runtime/runtime.js";
   import QRCode from "qrcode";
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import Typewriter from "./Typewriter.svelte";
 
   // Logo asset
@@ -47,6 +47,21 @@
   let isDragOver = false;
   let savePath = ""; // persisted save directory
 
+  // ── Sound toggle ────────────────────────────────────────────────────────
+  let soundEnabled = localStorage.getItem("beamsync_sound") !== "false";
+  function toggleSound() {
+    soundEnabled = !soundEnabled;
+    localStorage.setItem("beamsync_sound", soundEnabled ? "true" : "false");
+    if (soundEnabled) PlaySound("blip"); // confirm it's on
+  }
+
+  // ── Batch transfer tracking ──────────────────────────────────────────
+  // Count files received in the current upload session so we can play
+  // the success tone only once at the end instead of once per file.
+  let batchCount = 0;         // files received this session
+  let batchTimer = null;      // resets batchCount after idle
+  let showTickAnim = false;   // drives the "all done" tick overlay
+
   // ── Toast system ──────────────────────────────────────────────────────────
   // Each toast: { id, msg, type }
   let toasts = [];
@@ -73,8 +88,12 @@
     });
   }
 
-  // ── Mount ─────────────────────────────────────────────────────────────────
+  // ── Mount / Unmount ─────────────────────────────────────────────────────
   onMount(async () => {
+    // 💡 Fix for Wails Dev Mode Hot-Reloads:
+    // Clear any zombie listeners from previous hmr reloads that had soundEnabled=true
+    EventsOffAll();
+
     EventsOn("device_connected", () => {
       connectionState = "CONNECTED";
       playSound("connect");
@@ -104,7 +123,21 @@
       lastProgressTime = 0;
       progressStartTime = 0;
       speedHistory = [];
-      playSound("success");
+
+      // Batch tracking: accumulate count, reset the "all done" idle timer.
+      // The timer is also cancelled inside upload_progress, so it only fires
+      // when there has been no transfer activity at all for 2.5 s.
+      batchCount += 1;
+      clearTimeout(batchTimer);
+      batchTimer = setTimeout(() => {
+        if (batchCount > 0) {
+          playSound("success");
+          showTickAnim = true;
+          setTimeout(() => { showTickAnim = false; }, 2600);
+        }
+        batchCount = 0;
+      }, 2500);
+
       toast(`✅ Received: ${filename}`, "success");
     });
 
@@ -178,7 +211,7 @@
       lastLoaded = written;
       lastProgressTime = now;
       const pct =
-        total > 0 ? Math.min(100, Math.round((written / total) * 100)) : 0;
+        total > 0 ? Math.min(100, Math.round((written / total) * 100)) : -1;
 
       progress = {
         active: true,
@@ -193,6 +226,9 @@
       };
 
       if (connectionState !== "CONNECTED") connectionState = "CONNECTED";
+      // If a new file is actively streaming, cancel the batch-complete timer —
+      // we are NOT done yet.
+      clearTimeout(batchTimer);
       // Reset stale-progress watchdog: clears if no progress event for 30s
       clearTimeout(_progressTimeout);
       _progressTimeout = setTimeout(() => {
@@ -235,6 +271,12 @@
     } catch {
       savePath = "";
     }
+  });
+
+  onDestroy(() => {
+    EventsOffAll();
+    clearTimeout(batchTimer);
+    clearTimeout(_progressTimeout);
   });
 
   async function initReceiver() {
@@ -305,7 +347,7 @@
   }
 
   function playSound(type) {
-    PlaySound(type);
+    if (soundEnabled) PlaySound(type);
   }
   function openFile(name) {
     OpenFile(name);
@@ -363,6 +405,10 @@
       percent: 0,
       speed: "0 MB/s",
       received: "0.00 MB",
+      total: "0.00 MB",
+      timeRemaining: "—",
+      totalTime: "0s",
+      speedColor: "#ffb000",
     };
     lastLoaded = 0;
     lastProgressTime = 0;
@@ -519,6 +565,16 @@
       </div>
     {/if}
 
+    <button
+      class="nav-btn nav-btn--sound"
+      on:click={toggleSound}
+      on:mouseenter={() => soundEnabled && playSound("blip")}
+      title={soundEnabled ? "Mute sounds" : "Unmute sounds"}
+    >
+      <span class="nav-icon">{soundEnabled ? "🔊" : "🔇"}</span>
+      <span class="nav-label">{soundEnabled ? "SOUND ON" : "MUTED"}</span>
+    </button>
+
     <div class="sidebar__spacer"></div>
 
     <!-- About nav at the bottom -->
@@ -657,12 +713,19 @@
                     <span>⌛ {progress.timeRemaining} remaining</span>
                   </div>
                 </div>
-                <div class="transfer-pct">{progress.percent}%</div>
+                <div class="transfer-pct">
+                  {#if progress.percent === -1}
+                    —%
+                  {:else}
+                    {progress.percent}%
+                  {/if}
+                </div>
               </div>
               <div class="transfer-bar-track">
                 <div
                   class="transfer-bar-fill"
-                  style="width:{progress.percent}%; background-color: {progress.speedColor};"
+                  class:indeterminate={progress.percent === -1}
+                  style="width:{progress.percent === -1 ? '100%' : progress.percent + '%'}"
                 ></div>
               </div>
             </div>
@@ -827,6 +890,21 @@
     {/if}
   </main>
 </div>
+
+<!-- ── Tick animation overlay ────────────────────────────────────────────────────────── -->
+{#if showTickAnim}
+  <div class="tick-overlay" aria-hidden="true">
+    <div class="tick-ring">
+      <svg class="tick-svg" viewBox="0 0 52 52">
+        <circle class="tick-circle" cx="26" cy="26" r="24" fill="none" stroke-width="2.5"/>
+        <polyline class="tick-check" fill="none" stroke-width="3"
+          stroke-linecap="round" stroke-linejoin="round"
+          points="14,27 22,35 38,17"/>
+      </svg>
+    </div>
+    <div class="tick-label">TRANSFER COMPLETE</div>
+  </div>
+{/if}
 
 <!-- Sender URL dialog -->
 {#if showSenderDialog}
