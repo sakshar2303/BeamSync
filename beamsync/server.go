@@ -25,7 +25,7 @@ import (
 
 type EventCallback func(eventName string, data string)
 
-//go:embed ui/*.html
+//go:embed ui/*.html ui/*.png
 var uiFS embed.FS
 
 // serverState holds per-instance connection tracking (no more package-level globals).
@@ -410,6 +410,18 @@ func StartServer(uploadDir string, startPort int, callback EventCallback) (*HTTP
 		}
 	})
 
+	mux.HandleFunc("/logo.png", func(w http.ResponseWriter, r *http.Request) {
+		setCORSHeaders(w)
+		w.Header().Set("Cache-Control", "public, max-age=31536000")
+		w.Header().Set("Content-Type", "image/png")
+		content, err := uiFS.ReadFile("ui/logo.png")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(content)
+	})
+
 	// ── Upload ────────────────────────────────────────────────────────────────
 	mux.HandleFunc("/upload", tokenMiddleware(token, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Println("📤 POST /upload - Upload started")
@@ -694,14 +706,14 @@ func StartSender(filePaths []string, callback EventCallback) (*HTTPServer, strin
 			name := filepath.Base(filePaths[0])
 			b.WriteString(fmt.Sprintf(`<div class="file-card">
 				<div class="file-info">%s</div>
-				<a href="#" class="download-btn" onclick="event.preventDefault(); startDownload('/download?token=%s'); return false;">⬇️ SAVE</a>
+				<a href="#" class="download-btn" onclick="event.preventDefault(); startDownload('/download?token=%s'); return false;">⬇️ Download</a>
 			</div>`, name, token))
 		} else {
 			for i, path := range filePaths {
 				name := filepath.Base(path)
 				b.WriteString(fmt.Sprintf(`<div class="file-card">
 				<div class="file-info">%s</div>
-				<a href="#" class="download-btn" onclick="event.preventDefault(); startDownload('/download/%d?token=%s'); return false;">⬇️ SAVE</a>
+				<a href="#" class="download-btn" onclick="event.preventDefault(); startDownload('/download/%d?token=%s'); return false;">⬇️ Download</a>
 			</div>`, name, i, token))
 			}
 		}
@@ -720,6 +732,18 @@ func StartSender(filePaths []string, callback EventCallback) (*HTTPServer, strin
 		html := strings.Replace(string(content), "{{FILES}}", buildFileBlock(filePaths), 1)
 		html = strings.Replace(html, "{{TOKEN}}", token, 1)
 		w.Write([]byte(html))
+	})
+
+	mux.HandleFunc("/logo.png", func(w http.ResponseWriter, r *http.Request) {
+		setCORSHeaders(w)
+		w.Header().Set("Cache-Control", "public, max-age=31536000")
+		w.Header().Set("Content-Type", "image/png")
+		content, err := uiFS.ReadFile("ui/logo.png")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(content)
 	})
 
 	if len(filePaths) == 1 {

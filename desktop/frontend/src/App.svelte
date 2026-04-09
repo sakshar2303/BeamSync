@@ -10,10 +10,23 @@
     GetSavePath,
     SetSavePath,
   } from "../wailsjs/go/main/App.js";
-  import { EventsOn, EventsOffAll, BrowserOpenURL } from "../wailsjs/runtime/runtime.js";
+  import {
+    EventsOn,
+    EventsOffAll,
+    BrowserOpenURL,
+  } from "../wailsjs/runtime/runtime.js";
   import QRCode from "qrcode";
   import { onMount, onDestroy } from "svelte";
+  import { fly } from "svelte/transition";
   import Typewriter from "./Typewriter.svelte";
+
+  import {
+    TopNavBar,
+    FileDropZone,
+    TransferProgressBar,
+    TransferComplete,
+    ConnectedDevicesPanel,
+  } from "./design-system/index.js";
 
   // Logo asset
   import logoImg from "./assets/images/icon.png";
@@ -58,9 +71,10 @@
   // ── Batch transfer tracking ──────────────────────────────────────────
   // Count files received in the current upload session so we can play
   // the success tone only once at the end instead of once per file.
-  let batchCount = 0;         // files received this session
-  let batchTimer = null;      // resets batchCount after idle
-  let showTickAnim = false;   // drives the "all done" tick overlay
+  let batchCount = 0; // files received this session
+  let batchTimer = null; // resets batchCount after idle
+  let showTickAnim = false; // drives the "all done" tick overlay
+  let lastBatchCount = 0;
 
   // ── Toast system ──────────────────────────────────────────────────────────
   // Each toast: { id, msg, type }
@@ -77,15 +91,8 @@
   }
 
   // ── Cursor glow ─────────────────────────────────────────────────────────
-  let cursorEl;
-  let _raf;
   function handleMouseMove(e) {
-    if (_raf) return;
-    _raf = requestAnimationFrame(() => {
-      if (cursorEl)
-        cursorEl.style.transform = `translate3d(${e.clientX - 150}px,${e.clientY - 150}px,0)`;
-      _raf = null;
-    });
+    // legacy mouse glow removed
   }
 
   // ── Mount / Unmount ─────────────────────────────────────────────────────
@@ -132,10 +139,10 @@
       batchTimer = setTimeout(() => {
         if (batchCount > 0) {
           playSound("success");
+          lastBatchCount = batchCount;
           showTickAnim = true;
-          setTimeout(() => { showTickAnim = false; }, 2600);
+          batchCount = 0;
         }
-        batchCount = 0;
       }, 2500);
 
       toast(`✅ Received: ${filename}`, "success");
@@ -165,8 +172,7 @@
     const calculateSmoothedSpeed = (currentSpeed) => {
       speedHistory.push(currentSpeed);
       if (speedHistory.length > 10) speedHistory.shift(); // Keep last 10 samples
-      const avg =
-        speedHistory.reduce((a, b) => a + b, 0) / speedHistory.length;
+      const avg = speedHistory.reduce((a, b) => a + b, 0) / speedHistory.length;
       return avg;
     };
 
@@ -219,7 +225,7 @@
         percent: pct,
         speed: speedStr,
         received: `${(written / 1048576).toFixed(2)} MB`,
-        total: `${(total / 1048576).toFixed(2)} MB`,
+        total: total > 0 ? `${(total / 1048576).toFixed(2)} MB` : 'Unknown',
         timeRemaining,
         totalTime: totalTimeStr,
         speedColor,
@@ -338,7 +344,7 @@
       {
         width: 220,
         margin: 2,
-        color: { dark: "#00FF41", light: "#00000000" },
+        color: { dark: "#0A0A0A", light: "#00000000" },
       },
       (err, url) => {
         if (!err) qrImage = url;
@@ -474,480 +480,929 @@
 
 <svelte:window on:mousemove={handleMouseMove} />
 
-<!-- Cursor glow — isolated fixed layer, GPU-promoted via will-change -->
-<div class="cursor-glow" bind:this={cursorEl} aria-hidden="true"></div>
-
-<!-- Drop overlay -->
+<!-- Drop zone layer (always active behind nav for drag-drop SEND initiation) -->
 <div
-  class="drop-overlay"
-  class:visible={isDragOver}
+  class="app-dropzone"
   on:dragover={handleDragOver}
-  on:dragleave={handleDragLeave}
   on:drop={handleDrop}
+  on:dragleave={handleDragLeave}
 >
-  <div class="drop-message blink">[ DROP → INITIATE_SEND ]</div>
-  <div class="drop-border"></div>
-</div>
-
-<!-- Toast rack -->
-<div class="toast-rack" aria-live="polite">
-  {#each toasts as t (t.id)}
-    <div class="toast toast--{t.type}">{t.msg}</div>
-  {/each}
-</div>
-
-<!-- App Shell -->
-<div class="shell" on:dragover={handleDragOver} on:drop={handleDrop}>
-  <!-- ── SIDEBAR ─────────────────────────────────────────────────────────── -->
-  <aside class="sidebar">
-    <!-- Logo + name -->
-    <div class="sidebar__logo">
-      <img src={logoImg} alt="BeamSync" class="logo-img" />
-      <div>
-        <div class="logo-title">BEAMSYNC</div>
-        <div class="logo-ver">v2.0</div>
-      </div>
+  {#if isDragOver}
+    <div class="drop-overlay">
+      <div class="drop-message">[ DROP → INITIATE_SEND ]</div>
     </div>
+  {/if}
 
-    <!-- Connection status pill -->
-    <div class="conn-pill {connClass}">
-      <span class="conn-dot"></span>
-      <span class="conn-label">{connLabel}</span>
-    </div>
+  <!-- Toast rack -->
+  <div class="toast-rack" aria-live="polite">
+    {#each toasts as t (t.id)}
+      <div class="toast toast--{t.type}">{t.msg}</div>
+    {/each}
+  </div>
 
-    <!-- Mode tabs -->
-    <nav class="sidebar__nav">
-      <button
-        class="nav-btn"
-        class:active={mode === "RECEIVE"}
-        on:click={() => switchMode("RECEIVE")}
-        on:mouseenter={() => playSound("blip")}
-      >
-        <span class="nav-icon">⬇</span><span class="nav-label">RECEIVE</span>
-      </button>
-      <button
-        class="nav-btn"
-        class:active={mode === "SEND"}
-        on:click={() => {
-          switchMode("SEND");
-          if (mode === "SEND") startSend();
-        }}
-        on:mouseenter={() => playSound("blip")}
-      >
-        <span class="nav-icon">⬆</span><span class="nav-label">SEND</span>
-      </button>
-    </nav>
+  <div id="app" class="nb-theme">
+    <TopNavBar
+      activeTab={mode.toLowerCase()}
+      networkStatus={connectionState.toLowerCase()}
+      serverUrl={displayUrl}
+      appVersion="v2.2"
+      on:tabChange={({ detail }) => switchMode(detail.tab.toUpperCase())}
+      on:settings={toggleSound}
+      on:reset={handleDisconnectReset}
+    />
 
-    <!-- Network info -->
-    {#if displayUrl}
-      <div class="net-info">
-        <div class="net-label">SERVER</div>
-        <div class="net-url">{displayUrl}</div>
-      </div>
-    {/if}
-
-    {#if savePath}
-      <div class="save-path-box">
-        <div class="save-path-header">
-          <span class="save-path-icon">📂</span>
-          <span class="save-path-label">SAVE TO</span>
-        </div>
-        <div class="save-path-value" title={savePath}>
-          {savePath.split('/').slice(-2).join('/')}
-        </div>
-        <button
-          class="save-path-btn"
-          on:click={changeSavePath}
-          on:mouseenter={() => playSound("blip")}
-        >
-          ✎ CHANGE
-        </button>
-      </div>
-    {/if}
-
-    <button
-      class="nav-btn nav-btn--sound"
-      on:click={toggleSound}
-      on:mouseenter={() => soundEnabled && playSound("blip")}
-      title={soundEnabled ? "Mute sounds" : "Unmute sounds"}
-    >
-      <span class="nav-icon">{soundEnabled ? "🔊" : "🔇"}</span>
-      <span class="nav-label">{soundEnabled ? "SOUND ON" : "MUTED"}</span>
-    </button>
-
-    <div class="sidebar__spacer"></div>
-
-    <!-- About nav at the bottom -->
-    <button
-      class="nav-btn nav-btn--about"
-      class:active={mode === "ABOUT"}
-      on:click={() => {
-        playSound("blip");
-        mode = "ABOUT";
-      }}
-      on:mouseenter={() => playSound("blip")}
-    >
-      <span class="nav-icon">◈</span><span class="nav-label">ABOUT</span>
-    </button>
-
-    <button
-      class="terminate-btn"
-      on:click={resetAll}
-      on:mouseenter={() => playSound("blip")}
-      title="Terminate all connections"
-    >
-      ☠ TERMINATE
-    </button>
-  </aside>
-
-  <!-- ── MAIN ───────────────────────────────────────────────────────────── -->
-  <main class="main">
-    <!-- RECEIVE mode -->
-    {#if mode === "RECEIVE"}
-      {#if connectionState !== "CONNECTED"}
-        <section class="panel qr-panel">
-          <div class="panel__header">
-            <h2 class="panel__title">
-              {#if connectionState === "WAITING"}
-                <Typewriter text="// WAITING_FOR_UPLINK..." speed={30} />
-              {:else if connectionState === "DISCONNECTED"}
-                // SIGNAL_LOST
-              {:else}
-                // STANDBY
-              {/if}
-            </h2>
-          </div>
-
-          <div class="qr-stage">
-            {#if qrImage}
-              <div
-                class="qr-wrap"
-                class:qr-pulse={connectionState === "WAITING"}
-              >
-                <div class="qr-label-top">DATA_LINK</div>
-                <img
-                  src={qrImage}
-                  alt="Connection QR Code"
-                  class="qr-img"
-                  draggable="false"
-                />
-                {#if connectionState === "WAITING"}
-                  <div class="qr-scan-line" aria-hidden="true"></div>
-                {/if}
+    <main class="main-content">
+      {#if mode === "RECEIVE"}
+        <div class="mode-wrapper" in:fly={{ y: 15, duration: 250 }}>
+        {#if connectionState !== "CONNECTED"}
+          <div class="receive-standby">
+            <div class="nb-card home-card">
+              <div class="home-card__header">
+                <div
+                  class="status-indicator"
+                  class:pulse={connectionState === "WAITING"}
+                ></div>
+                <h1 class="standby-title">
+                  {#if connectionState === "WAITING"}
+                    Connect via {serverUrl
+                      .replace(/^https?:\/\//, "")
+                      .split(":")[0] || "Wi-Fi"}
+                  {:else if connectionState === "DISCONNECTED"}
+                    Connection Lost
+                  {:else}
+                    Ready to Connect
+                  {/if}
+                </h1>
               </div>
-            {:else}
-              <div class="qr-loading blink">GENERATING_LINK...</div>
+
+              <div class="home-card__body">
+                {#if qrImage}
+                  <div class="qr-wrapper">
+                    <img
+                      src={qrImage}
+                      alt="QR Code"
+                      class="qr-code"
+                      draggable="false"
+                    />
+                  </div>
+                {:else}
+                  <div class="qr-wrapper qr-loading">GENERATING_LINK...</div>
+                {/if}
+
+                <div class="instructions-list">
+                  <div class="instr-step">
+                    <span class="step-num">1</span> Connect to same Wi-Fi
+                  </div>
+                  <div class="instr-step">
+                    <span class="step-num">2</span> Scan QR code
+                  </div>
+                  <div class="instr-step">
+                    <span class="step-num">3</span> Select files
+                  </div>
+                </div>
+              </div>
+
+              <div class="home-card__footer">
+                {#if displayUrl}
+                  <div class="url-group">
+                    <span class="url-text">{displayUrl}</span>
+                    <button
+                      class="nb-btn nb-btn--primary"
+                      on:click={() => {
+                        navigator.clipboard.writeText(displayUrl);
+                        toast("Copied!", "success");
+                      }}>COPY</button
+                    >
+                  </div>
+                {/if}
+
+                <div class="save-path-row">
+                  <span class="save-path-lbl nb-badge">Save to</span>
+                  <span class="save-path-val">{savePath || "Default"}</span>
+                  <button
+                    class="nb-btn nb-btn--ghost nb-btn--sm"
+                    style="padding: 4px 10px; font-size: 0.75rem;"
+                    on:click={changeSavePath}>CHANGE</button
+                  >
+                </div>
+              </div>
+            </div>
+
+            {#if connectionState === "DISCONNECTED"}
+              <button
+                class="nb-btn nb-btn--danger reconnect-btn"
+                on:click={handleDisconnectReset}>RECONNECT</button
+              >
             {/if}
           </div>
+        {:else}
+          <!-- Connected Receive Mode -->
+          <div class="receive-active">
+            <h2 class="active-title">Device Connected</h2>
 
-          <div class="qr-instructions">
-            <div class="instr-row">
-              <span class="instr-num">01</span><span
-                >Connect both devices to the same Wi-Fi network</span
-              >
-            </div>
-            <div class="instr-row">
-              <span class="instr-num">02</span><span
-                >Scan the QR code or open the URL on your phone</span
-              >
-            </div>
-            <div class="instr-row">
-              <span class="instr-num">03</span><span
-                >Select files and tap Upload</span
-              >
-            </div>
-          </div>
-
-          {#if connectionState === "DISCONNECTED"}
-            <button
-              class="action-btn action-btn--cyan"
-              on:click={handleDisconnectReset}
-              on:mouseenter={() => playSound("blip")}
-            >
-              ↺ RECONNECT
-            </button>
-          {/if}
-
-          {#if displayUrl}
-            <div class="url-strip">
-              <span class="url-strip__label">URL</span>
-              <span class="url-strip__val">{displayUrl}</span>
-              <button
-                class="url-strip__copy"
-                on:click={() => {
-                  navigator.clipboard.writeText(displayUrl);
-                  toast("Copied!", "info");
-                }}>COPY</button
-              >
-            </div>
-          {/if}
-        </section>
-      {:else}
-        <!-- Connected dashboard -->
-        <section class="panel connected-panel">
-          <div class="panel__header">
-            <h2 class="panel__title connected-title">// LINK_ESTABLISHED</h2>
-            <div class="conn-badge">DEVICE ONLINE</div>
-          </div>
-
-          {#if progress.active}
-            <div class="transfer-block">
-              <div class="transfer-header">
-                <span class="transfer-icon">📡</span>
-                <div class="transfer-info">
-                  <div class="transfer-name">{progress.filename}</div>
-                  <div class="transfer-meta">
-                    <span class="transfer-meta__item"
-                      >{progress.received}/{progress.total}</span
-                    >
-                    <span class="transfer-meta__item" class:transfer-meta__speed={progress.speed}>
-                      <span
-                        class="speed-dot"
-                        style="background-color: {progress.speedColor};"
-                      ></span>
-                      {progress.speed}
-                    </span>
-                  </div>
-                  <div class="transfer-submeta">
-                    <span>⏱️ {progress.totalTime}</span>
-                    <span>⌛ {progress.timeRemaining} remaining</span>
-                  </div>
-                </div>
-                <div class="transfer-pct">
-                  {#if progress.percent === -1}
-                    —%
-                  {:else}
-                    {progress.percent}%
-                  {/if}
+            {#if progress.active}
+              <TransferProgressBar
+                filename={progress.filename}
+                percent={progress.percent}
+                speed={progress.speed}
+                received={progress.received}
+                total={progress.total}
+                eta={progress.timeRemaining}
+                elapsed={progress.totalTime}
+                role="receiver"
+                active={true}
+                on:cancel={() => resetAll()}
+              />
+            {:else}
+              <div class="ready-banner pulse-bg">
+                <div class="radar-ping"></div>
+                <div class="ready-content">
+                  <span class="status-badge">READY</span>
+                  <span class="status-text">WAITING FOR FILES...</span>
                 </div>
               </div>
-              <div class="transfer-bar-track">
-                <div
-                  class="transfer-bar-fill"
-                  class:indeterminate={progress.percent === -1}
-                  style="width:{progress.percent === -1 ? '100%' : progress.percent + '%'}"
-                ></div>
-              </div>
-            </div>
-          {:else}
-            <div class="ready-msg">
-              <span class="ready-icon blink">▶</span>
-              <span>READY — Waiting for incoming files…</span>
-            </div>
-          {/if}
+            {/if}
 
-          <div class="file-log">
-            <div class="file-log__header">
-              <span>📥 RECEIVED FILES</span>
-              <span class="file-log__count"
-                >{receivedFiles.length} file{receivedFiles.length !== 1
-                  ? "s"
-                  : ""}</span
-              >
-            </div>
-            {#if sortedFiles.length > 0}
-              <div class="file-list">
-                {#each sortedFiles as file (file.name + file.modTime)}
-                  <button class="file-row" on:click={() => openFile(file.name)}>
-                    <span class="file-row__icon">{fileIcon(file.name)}</span>
-                    <span class="file-row__name">{file.name}</span>
-                    <span class="file-row__size"
-                      >{formatSize(file.sizeBytes)}</span
-                    >
-                    <span class="file-row__time">{file.modTime}</span>
-                    <span class="file-row__open">↗</span>
+            <div class="files-panel">
+              <div class="files-header">
+                <h3>RECEIVED FILES ({receivedFiles.length})</h3>
+              </div>
+              <div class="files-list" class:empty={receivedFiles.length === 0}>
+                {#if receivedFiles.length === 0}
+                  <div class="empty-state">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><rect x="3" y="3" width="18" height="18" rx="0" ry="0"/><line x1="9" y1="3" x2="9" y2="21"/><path d="M13 8h4"/><path d="M13 12h4"/></svg>
+                    <p>INBOX EMPTY<br><small>Incoming data will appear here</small></p>
+                  </div>
+                {/if}
+                {#each sortedFiles as file}
+                  <button
+                    class="file-item"
+                    on:click={() => openFile(file.name)}
+                  >
+                    <span class="file-icon">{fileIcon(file.name)}</span>
+                    <span class="file-name">{file.name}</span>
+                    <span class="file-size">{formatSize(file.sizeBytes)}</span>
+                    <span class="file-time">{file.modTime}</span>
                   </button>
                 {/each}
               </div>
-            {:else}
-              <div class="file-empty">
-                No files yet — waiting for transmission…
-              </div>
-            {/if}
+            </div>
           </div>
-        </section>
-      {/if}
+        {/if}
+        </div>
+      {:else if mode === "SEND"}
+        <div class="mode-wrapper send-layout" in:fly={{ y: 15, duration: 250 }}>
+          <FileDropZone on:selectFiles={startSend} on:requestPicker={startSend} />
 
-      <!-- SEND mode -->
-    {:else if mode === "SEND"}
-      <section class="panel send-panel">
-        <div class="panel__header">
-          <h2 class="panel__title send-title">// UPLINK_READY</h2>
+          {#if showSenderDialog}
+            <div class="sender-dialog">
+              <div class="sender-header">
+                <span class="radar-ping-small"></span>
+                <h3>READY TO SEND</h3>
+              </div>
+              <p class="sender-desc">Scan the QR code on the receiving device to download</p>
+              
+              {#if qrImage}
+                <div class="qr-frame">
+                  <img src={qrImage} alt="Sender QR" class="sender-qr" />
+                </div>
+              {/if}
+              
+              <div class="url-action-bar">
+                <span class="url-label">Or share this link:</span>
+                <div class="url-box">
+                  <input class="url-input nb-mono" readonly value={senderUrl} />
+                  <button
+                    class="nb-btn nb-btn--primary"
+                    on:click={() => {
+                      navigator.clipboard.writeText(senderUrl);
+                      toast("Link copied!", "success");
+                    }}>COPY</button
+                  >
+                </div>
+              </div>
+              
+              <button
+                class="nb-btn nb-btn--danger close-btn"
+                on:click={() => (showSenderDialog = false)}>CLOSE SESSION</button
+              >
+            </div>
+          {/if}
         </div>
-        <div
-          class="send-drop-zone"
-          on:click={startSend}
-          role="button"
-          tabindex="0"
-          on:keydown={(e) => e.key === "Enter" && startSend()}
-        >
-          <div class="send-drop__icon">⬆</div>
-          <div class="send-drop__primary">Click to select files</div>
-          <div class="send-drop__secondary">or drag &amp; drop anywhere</div>
-        </div>
-        <div class="send-info-cards">
-          <div class="info-card">
-            <div class="info-card__icon">🔒</div>
-            <div>
-              <div class="info-card__title">Secure</div>
-              <div class="info-card__desc">
-                Token-authenticated local transfer
+      {:else if mode === "ABOUT"}
+        <div class="mode-wrapper about-layout" in:fly={{ y: 15, duration: 250 }}>
+          <div class="about-card">
+            <div class="about-header">
+              <div class="logo-box">
+                <img src={logoImg} class="about-logo" alt="BeamSync Logo" />
+              </div>
+              <div class="about-title">
+                <h1>BEAMSYNC</h1>
+                <span class="version-badge">v2.2</span>
               </div>
             </div>
-          </div>
-          <div class="info-card">
-            <div class="info-card__icon">⚡</div>
-            <div>
-              <div class="info-card__title">Fast</div>
-              <div class="info-card__desc">Direct LAN — no cloud required</div>
-            </div>
-          </div>
-          <div class="info-card">
-            <div class="info-card__icon">📡</div>
-            <div>
-              <div class="info-card__title">Multi-file</div>
-              <div class="info-card__desc">Send multiple files at once</div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- ABOUT mode -->
-    {:else if mode === "ABOUT"}
-      <section class="panel about-panel">
-        <!-- App block -->
-        <div class="about-app">
-          <img
-            src={logoImg}
-            alt="BeamSync"
-            class="about-app__logo"
-            draggable="false"
-          />
-          <div class="about-app__info">
-            <div class="about-app__name">BEAMSYNC</div>
-            <div class="about-app__version">v2.0.0</div>
-            <p class="about-app__desc">
+            
+            <p class="about-desc">
               Fast, token-secured file transfers over your local network. No
-              cloud. No accounts. Just beam it.
+              cloud. No accounts.
             </p>
-            <div class="about-app__chips">
-              <span class="chip">🔒 LAN Only</span>
-              <span class="chip">⚡ Zero Cloud</span>
-              <span class="chip">📡 Real-time Progress</span>
-              <span class="chip">🖥 Desktop + Mobile</span>
+            
+            <div class="about-tags">
+              <span class="nb-badge nb-badge--info">LAN ONLY</span>
+              <span class="nb-badge nb-badge--success">ZERO CLOUD</span>
+            </div>
+          </div>
+
+          <div class="developer-card">
+            <div class="dev-header">
+              <h3>SYSTEM ARCHITECT</h3>
+            </div>
+            <div class="dev-body">
+              <span class="dev-name">Pranav Agarkar</span>
+              <div class="about-links">
+                <button
+                  class="nb-btn nb-btn--primary"
+                  on:click={() => openLink("https://github.com/PranavAgarkar07")}
+                  >GITHUB</button
+                >
+                <button
+                  class="nb-btn nb-btn--secondary"
+                  on:click={() =>
+                    openLink("https://pranavagarkar07.github.io/portfolio-svelte/")}
+                  >PORTFOLIO</button
+                >
+              </div>
             </div>
           </div>
         </div>
+      {/if}
+    </main>
+  </div>
 
-        <div class="about-divider">
-          <span class="about-divider__line"></span>
-          <span class="about-divider__label">// DEVELOPER</span>
-          <span class="about-divider__line"></span>
-        </div>
-
-        <!-- Developer block -->
-        <div class="about-dev">
-          <div class="about-dev__avatar-wrap">
-            <img
-              src={logoImg}
-              alt="Pranav Agarkar"
-              class="about-dev__avatar"
-              draggable="false"
-            />
-            <div class="about-dev__avatar-ring"></div>
-          </div>
-          <div class="about-dev__info">
-            <div class="about-dev__name">Pranav Agarkar</div>
-            <div class="about-dev__tagline">
-              // Building tools that make life simpler — one commit at a time
-            </div>
-            <div class="about-dev__links">
-              <button
-                class="link-btn link-btn--gh"
-                on:click={() => openLink("https://github.com/PranavAgarkar07")}
-                on:mouseenter={() => playSound("blip")}
-              >
-                <span>⌥</span> GitHub
-              </button>
-              <button
-                class="link-btn link-btn--web"
-                on:click={() =>
-                  openLink(
-                    "https://pranavagarkar07.github.io/portfolio-svelte/",
-                  )}
-                on:mouseenter={() => playSound("blip")}
-              >
-                <span>⬡</span> Portfolio
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div class="about-footer">
-          Built with Wails · Go · Svelte &nbsp;·&nbsp; © 2025 Pranav Agarkar
-        </div>
-      </section>
-    {/if}
-  </main>
+  {#if showTickAnim}
+    <TransferComplete
+      show={true}
+      fileCount={lastBatchCount}
+      on:dismiss={() => (showTickAnim = false)}
+    />
+  {/if}
 </div>
 
-<!-- ── Tick animation overlay ────────────────────────────────────────────────────────── -->
-{#if showTickAnim}
-  <div class="tick-overlay" aria-hidden="true">
-    <div class="tick-ring">
-      <svg class="tick-svg" viewBox="0 0 52 52">
-        <circle class="tick-circle" cx="26" cy="26" r="24" fill="none" stroke-width="2.5"/>
-        <polyline class="tick-check" fill="none" stroke-width="3"
-          stroke-linecap="round" stroke-linejoin="round"
-          points="14,27 22,35 38,17"/>
-      </svg>
-    </div>
-    <div class="tick-label">TRANSFER COMPLETE</div>
-  </div>
-{/if}
+<style>
+  /* 
+   * Local App.svelte styles for new layout composition 
+   * All design systems tokens are global and handled by app.css/tokens.css
+   */
+  .app-dropzone {
+    width: 100vw;
+    height: 100vh;
+    position: relative;
+  }
 
-<!-- Sender URL dialog -->
-{#if showSenderDialog}
-  <div class="dialog-backdrop" on:click|self={() => (showSenderDialog = false)}>
-    <div class="dialog">
-      <div class="dialog__corner tl"></div>
-      <div class="dialog__corner tr"></div>
-      <div class="dialog__corner bl"></div>
-      <div class="dialog__corner br"></div>
-      <button class="dialog__close" on:click={() => (showSenderDialog = false)}
-        >✕</button
-      >
-      <h2 class="dialog__title">// PAYLOAD_READY</h2>
-      <p class="dialog__sub">Scan on receiving device to download</p>
-      {#if qrImage}
-        <div class="dialog__qr-wrap">
-          <img
-            src={qrImage}
-            alt="Sender QR Code"
-            class="dialog__qr"
-            draggable="false"
-          />
-        </div>
-      {/if}
-      <div class="dialog__url-row">
-        <input
-          class="dialog__url-input"
-          type="text"
-          value={senderUrl}
-          readonly
-        />
-        <button
-          class="dialog__copy-btn"
-          on:click={() => {
-            navigator.clipboard.writeText(senderUrl);
-            toast("URL copied!", "success");
-          }}>COPY</button
-        >
-      </div>
-      <button
-        class="action-btn action-btn--amber"
-        on:click={() => (showSenderDialog = false)}>CLOSE</button
-      >
-    </div>
-  </div>
-{/if}
+  .drop-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    background: rgba(0, 0, 0, 0.85);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 4px dashed var(--nb-primary);
+  }
+
+  .drop-message {
+    background: var(--nb-surface);
+    border: var(--nb-border-lg);
+    font-size: var(--nb-text-2xl);
+    font-weight: var(--nb-fw-bold);
+    padding: var(--nb-space-4) var(--nb-space-6);
+    box-shadow: var(--nb-shadow-lg);
+  }
+
+  /* Main Nav/Content Setup */
+  #app {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+
+  .main-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: var(--nb-space-6) var(--nb-space-8);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  /* Receive Standby */
+  .receive-standby,
+  .receive-active,
+  .about-layout,
+  .send-layout {
+    width: 100%;
+    max-width: 800px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--nb-space-6);
+  }
+
+  .receive-standby {
+    align-items: center;
+    width: 100%;
+    max-width: 500px;
+    margin: 0 auto;
+    margin-top: var(--nb-space-4);
+  }
+
+  .home-card {
+    width: 100%;
+    padding: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .home-card__header {
+    background: var(--nb-primary);
+    color: var(--nb-primary-text, #ffffff);
+    padding: var(--nb-space-4) var(--nb-space-5);
+    border-bottom: var(--nb-border-lg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--nb-space-4);
+  }
+
+  .status-indicator {
+    width: 16px;
+    height: 16px;
+    background: #00e676; /* Neon green ping */
+    border: 2px solid var(--nb-border-color);
+    border-radius: 50%;
+  }
+
+  .pulse {
+    animation: pulse 1.5s infinite alternate;
+  }
+
+  @keyframes pulse {
+    0% {
+      transform: scale(0.85);
+      box-shadow: 0 0 0 0 rgba(0, 230, 118, 0.4);
+    }
+    100% {
+      transform: scale(1.15);
+      box-shadow: 0 0 0 6px rgba(0, 230, 118, 0);
+    }
+  }
+
+  .standby-title {
+    font-size: var(--nb-text-xl);
+    font-family: var(--nb-font-mono);
+    font-weight: 800;
+    color: var(--nb-primary-text, #ffffff);
+    margin: 0;
+    line-height: 1.1;
+    letter-spacing: -0.04em;
+    text-transform: uppercase;
+  }
+
+  .home-card__body {
+    padding: var(--nb-space-6) var(--nb-space-4);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--nb-space-6);
+    background: var(--nb-surface);
+  }
+
+  .qr-wrapper {
+    background: #ffffff;
+    padding: var(--nb-space-4);
+    border: var(--nb-border-lg);
+    box-shadow: 8px 8px 0px var(--nb-border-color);
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+  .qr-wrapper:hover {
+    transform: translate(-4px, -4px);
+    box-shadow: 12px 12px 0px var(--nb-border-color);
+  }
+
+  .qr-code {
+    width: 220px;
+    height: 220px;
+    display: block;
+  }
+
+  .qr-loading {
+    width: 220px;
+    height: 220px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--nb-font-mono);
+    font-weight: 800;
+    color: #0a0a0a;
+  }
+
+  .instructions-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--nb-space-3);
+    width: 100%;
+    max-width: 380px;
+  }
+
+  .instr-step {
+    display: flex;
+    align-items: center;
+    gap: var(--nb-space-4);
+    font-family: var(--nb-font-body);
+    font-size: var(--nb-text-base);
+    font-weight: var(--nb-fw-bold);
+    letter-spacing: -0.01em;
+    padding: var(--nb-space-3) var(--nb-space-4);
+    background: var(--nb-bg);
+    border: var(--nb-border-lg);
+    box-shadow: 4px 4px 0px var(--nb-border-color);
+    color: var(--nb-text);
+  }
+
+  .step-num {
+    background: var(--nb-secondary);
+    color: #0a0a0a;
+    font-family: var(--nb-font-mono);
+    font-weight: 800;
+    font-size: var(--nb-text-lg);
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: var(--nb-border-lg);
+    flex-shrink: 0;
+  }
+
+  .home-card__footer {
+    padding: var(--nb-space-4);
+    background: var(--nb-bg);
+    border-top: var(--nb-border-lg);
+    display: flex;
+    flex-direction: column;
+    gap: var(--nb-space-4);
+  }
+
+  .url-group {
+    display: flex;
+    align-items: stretch;
+    border: var(--nb-border-lg);
+    background: var(--nb-surface);
+    overflow: hidden;
+    box-shadow: 4px 4px 0px var(--nb-border-color);
+  }
+
+  .url-text {
+    flex: 1;
+    font-family: var(--nb-font-mono);
+    font-size: var(--nb-text-base);
+    font-weight: 800;
+    color: var(--nb-text);
+    padding: 0 var(--nb-space-4);
+    display: flex;
+    align-items: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .url-group .nb-btn {
+    border: none;
+    border-left: var(--nb-border-lg);
+    border-radius: 0;
+    margin: 0;
+    box-shadow: none;
+    font-size: var(--nb-text-sm);
+    padding: 0 var(--nb-space-6);
+  }
+  .url-group .nb-btn:hover {
+    transform: none;
+    background: var(--nb-primary);
+    color: var(--nb-primary-text, #ffffff);
+  }
+
+  .save-path-row {
+    font-size: var(--nb-text-sm);
+    font-family: var(--nb-font-mono);
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--nb-space-3);
+    background: var(--nb-surface);
+    border: var(--nb-border-lg);
+    border-style: dashed;
+    padding: var(--nb-space-3) var(--nb-space-4);
+  }
+
+  .save-path-val {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--nb-text-muted);
+  }
+
+  .save-path-val {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--nb-font-mono);
+    font-size: var(--nb-text-xs);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .reconnect-btn {
+    margin-top: var(--nb-space-4);
+  }
+
+  /* Receive Active Components */
+  .active-title {
+    font-size: var(--nb-text-xl);
+    border-bottom: var(--nb-border-lg);
+    padding-bottom: var(--nb-space-2);
+  }
+
+  .ready-banner {
+    padding: var(--nb-space-4);
+    background: var(--nb-surface);
+    border: var(--nb-border-lg);
+    box-shadow: var(--nb-shadow-md);
+    margin-bottom: var(--nb-space-5);
+    display: flex;
+    align-items: center;
+    gap: var(--nb-space-4);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .pulse-bg {
+    background: repeating-linear-gradient(45deg, var(--nb-primary) 0, var(--nb-primary) 2px, transparent 2px, transparent 10px);
+    background-color: var(--nb-bg);
+  }
+
+  .ready-content {
+    display: flex;
+    align-items: center;
+    gap: var(--nb-space-3);
+    background: var(--nb-surface);
+    padding: var(--nb-space-2) var(--nb-space-4);
+    border: var(--nb-border-lg);
+    box-shadow: var(--nb-shadow-sm);
+    z-index: 1;
+  }
+
+  .status-badge {
+    background: var(--nb-secondary);
+    color: var(--nb-secondary-text);
+    padding: 4px 8px;
+    font-family: var(--nb-font-display);
+    font-weight: 800;
+    font-size: var(--nb-text-sm);
+    border: var(--nb-border-md);
+  }
+
+  .status-text {
+    font-family: var(--nb-font-mono);
+    font-weight: var(--nb-fw-bold);
+    color: var(--nb-text);
+  }
+
+  .radar-ping {
+    position: absolute;
+    right: 30px;
+    width: 20px;
+    height: 20px;
+    background: var(--nb-secondary);
+    border-radius: 50%;
+    animation: ping 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+  }
+
+  @keyframes ping {
+    75%, 100% {
+      transform: scale(3);
+      opacity: 0;
+    }
+  }
+
+  .files-panel {
+    background: var(--nb-surface);
+    border: var(--nb-border-lg);
+    box-shadow: var(--nb-shadow-md);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .files-header {
+    background: var(--nb-bg);
+    padding: var(--nb-space-3) var(--nb-space-4);
+    border-bottom: var(--nb-border-lg);
+  }
+
+  .files-header h3 {
+    font-size: var(--nb-text-sm);
+    letter-spacing: 0.05em;
+  }
+
+  .files-list {
+    max-height: 300px;
+    overflow-y: auto;
+  }
+
+  .files-list.empty {
+    padding: var(--nb-space-6);
+  }
+
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--nb-space-3);
+    color: var(--nb-text-muted);
+    text-align: center;
+    padding: var(--nb-space-4);
+  }
+
+  .empty-state svg {
+    color: var(--nb-primary);
+    margin-bottom: var(--nb-space-2);
+  }
+
+  .empty-state p {
+    font-family: var(--nb-font-display);
+    font-weight: 800;
+    font-size: var(--nb-text-lg);
+    line-height: 1.2;
+    margin: 0;
+    color: var(--nb-text);
+  }
+
+  .empty-state small {
+    font-family: var(--nb-font-mono);
+    font-weight: 400;
+    font-size: var(--nb-text-sm);
+    color: var(--nb-text-muted);
+  }
+
+  .file-item {
+    display: flex;
+    align-items: center;
+    gap: var(--nb-space-4);
+    width: 100%;
+    padding: var(--nb-space-3) var(--nb-space-4);
+    border-bottom: 1px solid var(--nb-border-color);
+    text-align: left;
+    color: var(--nb-text);
+  }
+
+  .file-item:hover {
+    background: var(--nb-bg);
+  }
+
+  .file-name {
+    flex: 1;
+    font-weight: var(--nb-fw-bold);
+  }
+  .file-size,
+  .file-time {
+    font-family: var(--nb-font-mono);
+    font-size: var(--nb-text-xs);
+    color: var(--nb-text-muted);
+  }
+
+  /* Sender Dialog */
+  .sender-dialog {
+    padding: var(--nb-space-6);
+    background: var(--nb-surface);
+    border: var(--nb-border-lg);
+    box-shadow: 6px 6px 0px var(--nb-shadow-color);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--nb-space-4);
+    margin-top: var(--nb-space-6);
+  }
+
+  .sender-header {
+    display: flex;
+    align-items: center;
+    gap: var(--nb-space-3);
+    background: var(--nb-bg);
+    border: var(--nb-border-md);
+    padding: var(--nb-space-2) var(--nb-space-4);
+  }
+
+  .sender-header h3 {
+    margin: 0;
+    font-family: var(--nb-font-display);
+    font-size: var(--nb-text-lg);
+    font-weight: 800;
+  }
+
+  .sender-desc {
+    color: var(--nb-text);
+    font-weight: var(--nb-fw-bold);
+    margin-bottom: var(--nb-space-2);
+    text-align: center;
+  }
+
+  .radar-ping-small {
+    width: 12px;
+    height: 12px;
+    background: var(--nb-primary);
+    border-radius: 50%;
+    animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+  }
+
+  .qr-frame {
+    background: var(--nb-bg);
+    padding: var(--nb-space-4);
+    border: var(--nb-border-lg);
+    box-shadow: var(--nb-shadow-md);
+    margin: var(--nb-space-2) 0;
+  }
+
+  .sender-qr {
+    width: 200px;
+    height: 200px;
+    display: block;
+    background: #ffffff;
+  }
+
+  .url-action-bar {
+    width: 100%;
+    max-width: 400px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--nb-space-2);
+    margin-bottom: var(--nb-space-3);
+  }
+
+  .url-label {
+    font-family: var(--nb-font-mono);
+    font-size: var(--nb-text-sm);
+    font-weight: var(--nb-fw-bold);
+  }
+
+  .url-box {
+    display: flex;
+    width: 100%;
+    border: var(--nb-border-md);
+    background: var(--nb-bg);
+  }
+
+  .url-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    padding: var(--nb-space-3);
+    outline: none;
+    min-width: 0;
+    color: var(--nb-text);
+  }
+
+  .close-btn {
+    width: 100%;
+    max-width: 400px;
+    margin-top: var(--nb-space-2);
+  }
+
+  /* About Layout */
+  .about-layout {
+    display: flex;
+    flex-direction: column;
+    gap: var(--nb-space-6);
+    margin-top: var(--nb-space-5);
+    max-width: 600px;
+    width: 100%;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .about-card {
+    background: var(--nb-surface);
+    border: var(--nb-border-lg);
+    box-shadow: 6px 6px 0px var(--nb-shadow-color);
+    padding: var(--nb-space-6);
+    display: flex;
+    flex-direction: column;
+    gap: var(--nb-space-4);
+  }
+
+  .about-header {
+    display: flex;
+    align-items: center;
+    gap: var(--nb-space-4);
+    border-bottom: var(--nb-border-md);
+    padding-bottom: var(--nb-space-4);
+  }
+
+  .logo-box {
+    background: #000000;
+    border: var(--nb-border-lg);
+    box-shadow: 4px 4px 0px var(--nb-shadow-color);
+    padding: var(--nb-space-1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .about-logo {
+    width: 64px;
+    height: 64px;
+    display: block;
+  }
+
+  .about-title {
+    display: flex;
+    flex-direction: row;
+    gap: var(--nb-space-3);
+    align-items: center;
+  }
+
+  .about-title h1 {
+    margin: 0;
+    font-family: var(--nb-font-display);
+    font-weight: 800;
+    font-size: 2rem;
+    line-height: 1;
+  }
+
+  .version-badge {
+    background: var(--nb-primary);
+    color: var(--nb-primary-text);
+    padding: 4px 8px;
+    font-family: var(--nb-font-mono);
+    font-size: var(--nb-text-sm);
+    font-weight: 800;
+    border: var(--nb-border-md);
+  }
+
+  .about-desc {
+    font-family: var(--nb-font-mono);
+    font-size: var(--nb-text-sm);
+    line-height: 1.6;
+    margin: 0;
+    color: var(--nb-text-muted);
+  }
+
+  .about-tags {
+    display: flex;
+    gap: var(--nb-space-2);
+    margin-top: var(--nb-space-3);
+  }
+
+  .developer-card {
+    background: var(--nb-bg);
+    border: var(--nb-border-lg);
+    box-shadow: 4px 4px 0px var(--nb-shadow-color);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .dev-header {
+    background: var(--nb-primary);
+    border-bottom: var(--nb-border-lg);
+    padding: var(--nb-space-2) var(--nb-space-4);
+  }
+
+  .dev-header h3 {
+    margin: 0;
+    font-family: var(--nb-font-display);
+    font-weight: 800;
+    font-size: var(--nb-text-sm);
+    letter-spacing: 0.05em;
+    color: var(--nb-primary-text);
+  }
+
+  .dev-body {
+    padding: var(--nb-space-4);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--nb-space-4);
+  }
+
+  .dev-name {
+    font-weight: var(--nb-fw-bold);
+    font-size: var(--nb-text-lg);
+    font-family: var(--nb-font-display);
+  }
+
+  .about-links {
+    display: flex;
+    gap: var(--nb-space-3);
+  }
+</style>
