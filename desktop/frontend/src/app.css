@@ -690,7 +690,51 @@ button {
     background: repeating-linear-gradient(45deg, var(--primary), var(--primary) 8px, rgba(0, 0, 0, 0.25) 8px, rgba(0, 0, 0, 0.25) 16px);
     animation: stripe 0.7s linear infinite;
     will-change: background-position;
-    transition: width 0.22s linear;
+    transition: width 0.22s linear, background-color 0.3s ease;
+}
+
+.transfer-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.transfer-meta__item {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.95rem;
+    color: var(--amber);
+}
+
+.transfer-meta__speed {
+    color: var(--amber);
+    font-weight: bold;
+}
+
+.speed-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+.transfer-submeta {
+    font-size: 0.85rem;
+    color: rgba(0, 255, 65, 0.6);
+    display: flex;
+    gap: 12px;
+    margin-top: 4px;
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.6;
+    }
 }
 
 /* File log */

@@ -33,9 +33,15 @@
     percent: 0,
     speed: "0 MB/s",
     received: "0.00 MB",
+    total: "0.00 MB",
+    timeRemaining: "—",
+    totalTime: "0s",
+    speedColor: "#ffb000",
   };
   let lastProgressTime = 0;
   let lastLoaded = 0;
+  let progressStartTime = 0; // Track when transfer started
+  let speedHistory = []; // Rolling average for smooth speed display
 
   let showSenderDialog = false;
   let isDragOver = false;
@@ -89,13 +95,50 @@
         percent: 0,
         speed: "0 MB/s",
         received: "0.00 MB",
+        total: "0.00 MB",
+        timeRemaining: "—",
+        totalTime: "0s",
+        speedColor: "#ffb000",
       };
       lastLoaded = 0;
       lastProgressTime = 0;
+      progressStartTime = 0;
+      speedHistory = [];
       playSound("success");
       toast(`✅ Received: ${filename}`, "success");
     });
-    EventsOn("upload_progress", (data) => {
+
+    // Helper function to format time duration (seconds to "2m 45s" format)
+    const formatTime = (seconds) => {
+      if (isNaN(seconds) || !isFinite(seconds)) return "—";
+      if (seconds < 0) return "—";
+      if (seconds < 60) return `${Math.round(seconds)}s`;
+      const mins = Math.floor(seconds / 60);
+      const secs = Math.round(seconds % 60);
+      if (mins < 60) return `${mins}m ${secs}s`;
+      const hours = Math.floor(mins / 60);
+      const remainMins = mins % 60;
+      return `${hours}h ${remainMins}m`;
+    };
+
+    // Helper function to get speed color indicator
+    const getSpeedColor = (speedMBps) => {
+      if (speedMBps > 10) return "#00ff00"; // Green: fast
+      if (speedMBps > 5) return "#ffb000"; // Orange: medium
+      return "#ff6b6b"; // Red: slow
+    };
+
+    // Helper function to calculate smooth speed using rolling average
+    const calculateSmoothedSpeed = (currentSpeed) => {
+      speedHistory.push(currentSpeed);
+      if (speedHistory.length > 10) speedHistory.shift(); // Keep last 10 samples
+      const avg =
+        speedHistory.reduce((a, b) => a + b, 0) / speedHistory.length;
+      return avg;
+    };
+
+    // Handler for both upload and download progress
+    const handleProgressUpdate = (data) => {
       const parts = data.split("|");
       if (parts.length < 3) return;
       const [filename, wStr, tStr] = parts;
@@ -103,20 +146,52 @@
       const total = parseInt(tStr);
       const now = Date.now();
       const dt = (now - lastProgressTime) / 1000;
-      let speed = progress.speed;
-      if (dt > 0 && lastProgressTime > 0)
-        speed = `${((written - lastLoaded) / dt / 1048576).toFixed(2)} MB/s`;
+
+      // Initialize progress start time on first event
+      if (progressStartTime === 0) {
+        progressStartTime = now;
+      }
+
+      // Calculate raw speed
+      let instantSpeed = 0; // MB/s
+      if (dt > 0 && lastProgressTime > 0) {
+        instantSpeed = (written - lastLoaded) / dt / 1048576;
+      }
+
+      // Apply smoothing to speed
+      const smoothedSpeed = calculateSmoothedSpeed(Math.max(0, instantSpeed));
+      const speedStr = `${Math.max(0, smoothedSpeed).toFixed(2)} MB/s`;
+      const speedColor = getSpeedColor(smoothedSpeed);
+
+      // Calculate ETA
+      let timeRemaining = "—";
+      if (smoothedSpeed > 0) {
+        const remainingBytes = total - written;
+        const secondsRemaining = remainingBytes / (smoothedSpeed * 1048576);
+        timeRemaining = formatTime(secondsRemaining);
+      }
+
+      // Calculate total elapsed time
+      const elapsedSeconds = (now - progressStartTime) / 1000;
+      const totalTimeStr = formatTime(elapsedSeconds);
+
       lastLoaded = written;
       lastProgressTime = now;
       const pct =
         total > 0 ? Math.min(100, Math.round((written / total) * 100)) : 0;
+
       progress = {
         active: true,
         filename,
         percent: pct,
-        speed,
+        speed: speedStr,
         received: `${(written / 1048576).toFixed(2)} MB`,
+        total: `${(total / 1048576).toFixed(2)} MB`,
+        timeRemaining,
+        totalTime: totalTimeStr,
+        speedColor,
       };
+
       if (connectionState !== "CONNECTED") connectionState = "CONNECTED";
       // Reset stale-progress watchdog: clears if no progress event for 30s
       clearTimeout(_progressTimeout);
@@ -127,11 +202,20 @@
           percent: 0,
           speed: "0 MB/s",
           received: "0.00 MB",
+          total: "0.00 MB",
+          timeRemaining: "—",
+          totalTime: "0s",
+          speedColor: "#ffb000",
         };
         lastLoaded = 0;
         lastProgressTime = 0;
+        progressStartTime = 0;
+        speedHistory = [];
       }, 30000);
-    });
+    };
+
+    EventsOn("upload_progress", handleProgressUpdate);
+    EventsOn("download_progress", handleProgressUpdate);
     EventsOn("url_changed", (newURL) => {
       serverUrl = newURL;
       generateQR(newURL);
@@ -557,7 +641,20 @@
                 <div class="transfer-info">
                   <div class="transfer-name">{progress.filename}</div>
                   <div class="transfer-meta">
-                    {progress.received} · {progress.speed}
+                    <span class="transfer-meta__item"
+                      >{progress.received}/{progress.total}</span
+                    >
+                    <span class="transfer-meta__item" class:transfer-meta__speed={progress.speed}>
+                      <span
+                        class="speed-dot"
+                        style="background-color: {progress.speedColor};"
+                      ></span>
+                      {progress.speed}
+                    </span>
+                  </div>
+                  <div class="transfer-submeta">
+                    <span>⏱️ {progress.totalTime}</span>
+                    <span>⌛ {progress.timeRemaining} remaining</span>
                   </div>
                 </div>
                 <div class="transfer-pct">{progress.percent}%</div>
@@ -565,7 +662,7 @@
               <div class="transfer-bar-track">
                 <div
                   class="transfer-bar-fill"
-                  style="width:{progress.percent}%"
+                  style="width:{progress.percent}%; background-color: {progress.speedColor};"
                 ></div>
               </div>
             </div>

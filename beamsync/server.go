@@ -104,6 +104,30 @@ func (pw *progressWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// downloadProgressWriter wraps an io.Writer and emits download_progress events
+// as bytes are written. Uses an adaptive interval to avoid event flooding.
+type downloadProgressWriter struct {
+	w           io.Writer
+	total       int64
+	written     int64
+	filename    string
+	emit        func(string, string)
+	lastEmit    time.Time
+	minInterval time.Duration
+}
+
+func (dw *downloadProgressWriter) Write(p []byte) (int, error) {
+	n, err := dw.w.Write(p)
+	dw.written += int64(n)
+	now := time.Now()
+	if now.Sub(dw.lastEmit) >= dw.minInterval {
+		data := fmt.Sprintf("%s|%d|%d", dw.filename, dw.written, dw.total)
+		dw.emit("download_progress", data)
+		dw.lastEmit = now
+	}
+	return n, err
+}
+
 // copyChunked reads src in large chunks before writing to dst.
 // Go's multipart.Part has an internal 4 KB bufio, so Part.Read returns ≤4 KB
 // per call regardless of the dst buffer size. Without this helper, we end up
@@ -388,7 +412,7 @@ func StartServer(uploadDir string, startPort int, callback EventCallback) (*HTTP
 			// progress tracking wraps the buffered disk writer
 			pw := &progressWriter{
 				w:           diskBuf,
-				total:       -1, // unknown until fully received
+				total:       r.ContentLength, // reads real size from HTTP Content-Length header
 				filename:    savedName,
 				emit:        emit,
 				minInterval: 500 * time.Millisecond,
@@ -511,15 +535,14 @@ func StartSender(filePaths []string, callback EventCallback) (*HTTPServer, strin
 			name := filepath.Base(filePaths[0])
 			b.WriteString(fmt.Sprintf(`<div class="file-card">
 				<div class="file-info">%s</div>
-				<a href="/download?token=%s" class="download-btn" onclick="startDownload()">⬇️ SAVE</a>
-			</div>
-			<script>function startDownload() { setTimeout(() => alert("Download Started"), 500); }</script>`, name, token))
+				<a href="#" class="download-btn" onclick="event.preventDefault(); startDownload('/download?token=%s'); return false;">⬇️ SAVE</a>
+			</div>`, name, token))
 		} else {
 			for i, path := range filePaths {
 				name := filepath.Base(path)
 				b.WriteString(fmt.Sprintf(`<div class="file-card">
 				<div class="file-info">%s</div>
-				<a href="/download/%d?token=%s" class="download-btn">⬇️ SAVE</a>
+				<a href="#" class="download-btn" onclick="event.preventDefault(); startDownload('/download/%d?token=%s'); return false;">⬇️ SAVE</a>
 			</div>`, name, i, token))
 			}
 		}
@@ -547,7 +570,35 @@ func StartSender(filePaths []string, callback EventCallback) (*HTTPServer, strin
 			setCORSHeaders(w)
 			w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
 			w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
-			http.ServeFile(w, r, filePath)
+			
+			// Track download progress
+			file, err := os.Open(filePath)
+			if err != nil {
+				http.Error(w, "File not found", http.StatusNotFound)
+				return
+			}
+			defer file.Close()
+			
+			fileInfo, err := file.Stat()
+			if err != nil {
+				http.Error(w, "Failed to stat file", http.StatusInternalServerError)
+				return
+			}
+			
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", fileInfo.Size()))
+			w.Header().Set("Content-Type", "application/octet-stream")
+			
+			progressWriter := &downloadProgressWriter{
+				w:           w,
+				total:       fileInfo.Size(),
+				written:     0,
+				filename:    filename,
+				emit:        emit,
+				lastEmit:    time.Now(),
+				minInterval: 500 * time.Millisecond,
+			}
+			
+			io.Copy(progressWriter, file)
 		}))
 	} else {
 		for i, path := range filePaths {
@@ -557,7 +608,35 @@ func StartSender(filePaths []string, callback EventCallback) (*HTTPServer, strin
 				setCORSHeaders(w)
 				w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
 				w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filepath.Base(filePath)))
-				http.ServeFile(w, r, filePath)
+				
+				// Track download progress
+				file, err := os.Open(filePath)
+				if err != nil {
+					http.Error(w, "File not found", http.StatusNotFound)
+					return
+				}
+				defer file.Close()
+				
+				fileInfo, err := file.Stat()
+				if err != nil {
+					http.Error(w, "Failed to stat file", http.StatusInternalServerError)
+					return
+				}
+				
+				w.Header().Set("Content-Length", fmt.Sprintf("%d", fileInfo.Size()))
+				w.Header().Set("Content-Type", "application/octet-stream")
+				
+				progressWriter := &downloadProgressWriter{
+					w:           w,
+					total:       fileInfo.Size(),
+					written:     0,
+					filename:    filepath.Base(filePath),
+					emit:        emit,
+					lastEmit:    time.Now(),
+					minInterval: 500 * time.Millisecond,
+				}
+				
+				io.Copy(progressWriter, file)
 			}))
 		}
 	}
