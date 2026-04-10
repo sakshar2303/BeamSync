@@ -769,7 +769,13 @@ func StartSender(filePaths []string, callback EventCallback) (*HTTPServer, strin
 			}
 			
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", fileInfo.Size()))
-			w.Header().Set("Content-Type", "application/octet-stream")
+			// Detect real MIME type from extension so mobile can open the file directly.
+			// Fall back to octet-stream only for unknown/binary types.
+			mimeType := mime.TypeByExtension(filepath.Ext(filename))
+			if mimeType == "" {
+				mimeType = "application/octet-stream"
+			}
+			w.Header().Set("Content-Type", mimeType)
 			
 			progressWriter := &downloadProgressWriter{
 				w:           w,
@@ -807,7 +813,13 @@ func StartSender(filePaths []string, callback EventCallback) (*HTTPServer, strin
 				}
 				
 				w.Header().Set("Content-Length", fmt.Sprintf("%d", fileInfo.Size()))
-				w.Header().Set("Content-Type", "application/octet-stream")
+				// Detect real MIME type from extension so mobile can open the file directly.
+				// Fall back to octet-stream only for unknown/binary types.
+				mimeType := mime.TypeByExtension(filepath.Ext(filePath))
+				if mimeType == "" {
+					mimeType = "application/octet-stream"
+				}
+				w.Header().Set("Content-Type", mimeType)
 				
 				progressWriter := &downloadProgressWriter{
 					w:           w,
