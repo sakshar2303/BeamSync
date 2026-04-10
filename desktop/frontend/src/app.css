@@ -1388,3 +1388,276 @@ button {
         transform: rotate(360deg);
     }
 }
+/* ── Transfer Request Dialog ─────────────────────────────────────────────── */
+.transfer-dialog {
+    max-width: 440px;
+}
+
+.transfer-req-info {
+    width: 100%;
+    margin: 16px 0;
+    border: 1px solid var(--border);
+    background: rgba(0, 255, 65, 0.04);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.transfer-req-row {
+    display: flex;
+    gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid rgba(0, 255, 65, 0.12);
+    font-size: 0.85rem;
+}
+
+.transfer-req-row:last-child {
+    border-bottom: none;
+}
+
+.transfer-req-label {
+    color: rgba(0, 255, 65, 0.5);
+    font-size: 0.75rem;
+    letter-spacing: 1px;
+    min-width: 48px;
+    padding-top: 1px;
+}
+
+.transfer-req-val {
+    color: var(--primary);
+    word-break: break-all;
+}
+
+.transfer-req-remember {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.8rem;
+    color: rgba(0, 255, 65, 0.6);
+    cursor: pointer;
+    margin: 4px 0 16px;
+}
+
+.transfer-req-remember input {
+    accent-color: var(--primary);
+    width: 14px;
+    height: 14px;
+}
+
+.transfer-req-btns {
+    display: flex;
+    gap: 12px;
+    width: 100%;
+}
+
+.transfer-req-btns .action-btn {
+    flex: 1;
+}
+
+/* ── Settings Panel ───────────────────────────────────────────────────────── */
+.settings-panel {
+    overflow-y: auto;
+    max-height: 100%;
+}
+
+.settings-group {
+    width: 100%;
+    margin-bottom: 24px;
+    padding-bottom: 20px;
+    border-bottom: 1px dashed rgba(0, 255, 65, 0.15);
+}
+
+.settings-group__title {
+    font-size: 0.78rem;
+    letter-spacing: 2px;
+    color: rgba(0, 255, 65, 0.55);
+    margin-bottom: 14px;
+    text-transform: uppercase;
+}
+
+.settings-radios {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.settings-radio {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 14px;
+    border: 1px solid rgba(0, 255, 65, 0.2);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+}
+
+.settings-radio input[type="radio"] {
+    accent-color: var(--primary);
+    margin-top: 3px;
+    flex-shrink: 0;
+}
+
+.settings-radio.active {
+    border-color: var(--primary);
+    background: rgba(0, 255, 65, 0.06);
+}
+
+.settings-radio__label {
+    font-size: 0.9rem;
+    color: var(--primary);
+}
+
+.settings-radio__desc {
+    font-size: 0.75rem;
+    color: rgba(0, 255, 65, 0.45);
+    margin-top: 2px;
+}
+
+.settings-field {
+    margin-bottom: 14px;
+}
+
+.settings-label {
+    display: block;
+    font-size: 0.8rem;
+    color: rgba(0, 255, 65, 0.55);
+    margin-bottom: 6px;
+}
+
+.settings-input {
+    background: rgba(0, 255, 65, 0.05);
+    border: 1px solid rgba(0, 255, 65, 0.3);
+    color: var(--primary);
+    font-family: 'Courier New', monospace;
+    font-size: 0.85rem;
+    padding: 7px 10px;
+    border-radius: 3px;
+    outline: none;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.settings-input:focus {
+    border-color: var(--primary);
+    background: rgba(0, 255, 65, 0.08);
+}
+
+.settings-add-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+}
+
+.settings-add-row .settings-input {
+    flex: 1;
+    min-width: 100px;
+}
+
+.settings-add-btn {
+    background: transparent;
+    border: 1px solid rgba(0, 255, 65, 0.4);
+    color: var(--primary);
+    font-family: 'Courier New', monospace;
+    font-size: 0.8rem;
+    padding: 7px 12px;
+    border-radius: 3px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s;
+}
+
+.settings-add-btn:hover {
+    background: rgba(0, 255, 65, 0.1);
+}
+
+.tag-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.78rem;
+    padding: 3px 8px;
+    border-radius: 3px;
+    font-family: 'Courier New', monospace;
+}
+
+.tag--red {
+    background: rgba(255, 80, 80, 0.12);
+    border: 1px solid rgba(255, 80, 80, 0.4);
+    color: #ff6b6b;
+}
+
+.tag__rm {
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    font-size: 0.7rem;
+    padding: 0;
+    opacity: 0.7;
+}
+
+.tag__rm:hover { opacity: 1; }
+
+.device-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: rgba(0, 255, 65, 0.04);
+    border: 1px solid rgba(0, 255, 65, 0.15);
+    border-radius: 3px;
+    margin-bottom: 6px;
+    font-size: 0.83rem;
+}
+
+.device-row--blocked {
+    background: rgba(255, 80, 80, 0.04);
+    border-color: rgba(255, 80, 80, 0.2);
+}
+
+.device-row__name {
+    flex: 1;
+    color: var(--primary);
+}
+
+.device-row__ip {
+    color: rgba(0, 255, 65, 0.45);
+    font-size: 0.75rem;
+}
+
+.device-row__rm {
+    background: none;
+    border: none;
+    color: rgba(255, 100, 100, 0.6);
+    cursor: pointer;
+    font-size: 0.85rem;
+    padding: 2px 4px;
+}
+
+.device-row__rm:hover { color: #ff6b6b; }
+
+.settings-saved-hint {
+    font-size: 0.78rem;
+    color: rgba(0, 255, 65, 0.3);
+    text-align: center;
+    padding: 8px;
+}
+
+/* Red action button */
+.action-btn--red {
+    border-color: #ff6b6b;
+    color: #ff6b6b;
+}
+
+.action-btn--red:hover {
+    background: rgba(255, 107, 107, 0.15);
+    box-shadow: 0 0 12px rgba(255, 107, 107, 0.3);
+}

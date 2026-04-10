@@ -223,17 +223,12 @@
             }
         }
 
-        function upload() {
+        async function upload() {
             const files = document.getElementById('files').files;
             if (!files.length) {
                 document.getElementById('status').innerText = '>> ERROR: NO DATA SELECTED';
                 return;
             }
-
-            _uploading = true; // Pause background heartbeats
-
-            const fd = new FormData();
-            for (let f of files) fd.append('documents', f);
 
             const btn = document.querySelector('.btn');
             const progressContainer = document.getElementById('progressContainer');
@@ -241,7 +236,52 @@
             const progressText = document.getElementById('progressText');
             const statusEl = document.getElementById('status');
 
+            // ── Step 1: Request permission for each file ────────────────────
+            _uploading = true;
             btn.disabled = true;
+
+            for (let file of files) {
+                statusEl.innerText = `>> REQUESTING APPROVAL: ${file.name}`;
+                btn.innerText = '[ AWAITING APPROVAL... ]';
+
+                try {
+                    const res = await fetch('/request-transfer?token=' + TOKEN, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            filename: file.name,
+                            sizeBytes: file.size,
+                            mimeType: file.type || 'application/octet-stream'
+                        })
+                    });
+
+                    if (!res.ok) {
+                        const msg = await res.text();
+                        if (res.status === 403) {
+                            statusEl.innerText = `>> TRANSFER REJECTED: ${file.name}`;
+                        } else if (res.status === 408) {
+                            statusEl.innerText = `>> TIMED OUT — No response from receiver`;
+                        } else {
+                            statusEl.innerText = `>> ERROR: ${msg}`;
+                        }
+                        btn.disabled = false;
+                        btn.innerText = '[ RETRY UPLOAD ]';
+                        _uploading = false;
+                        return;
+                    }
+                } catch (err) {
+                    statusEl.innerText = '>> NETWORK ERROR (approval)';
+                    btn.disabled = false;
+                    btn.innerText = '[ RETRY UPLOAD ]';
+                    _uploading = false;
+                    return;
+                }
+            }
+
+            // ── Step 2: All approved — proceed with upload ──────────────────
+            const fd = new FormData();
+            for (let f of files) fd.append('documents', f);
+
             btn.innerText = '[ TRANSMITTING... ]';
             statusEl.innerText = '>> UPLOADING PACKETS...';
             progressContainer.style.display = 'block';
@@ -275,7 +315,7 @@
                         document.getElementById('files').value = '';
                         updateFileList();
                         progressContainer.style.display = 'none';
-                        _uploading = false; // Resume heartbeats securely after UI reset
+                        _uploading = false;
                     }, 2000);
                 } else {
                     statusEl.innerText = '>> ERROR: ' + xhr.statusText;

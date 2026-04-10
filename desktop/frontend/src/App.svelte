@@ -9,6 +9,10 @@
     GetReceivedFiles,
     GetSavePath,
     SetSavePath,
+    ApproveTransfer,
+    RejectTransfer,
+    GetTransferSettings,
+    SaveTransferSettings,
   } from "../wailsjs/go/main/App.js";
   import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime.js";
   import QRCode from "qrcode";
@@ -46,6 +50,25 @@
   let showSenderDialog = false;
   let isDragOver = false;
   let savePath = ""; // persisted save directory
+
+  // ── Transfer Request state ─────────────────────────────────────────────────
+  let transferRequest = null; // pending transfer approval popup
+  let rememberDevice = false;
+
+  // ── Settings state ─────────────────────────────────────────────────────────
+  let settings = {
+    mode: "ask_first",
+    maxFileSizeMB: 0,
+    blockedExtensions: [],
+    trustedDevices: [],
+    blockedDevices: [],
+  };
+  let settingsDirty = false;
+  let newBlockedExt = "";
+  let newTrustedIP = "";
+  let newTrustedName = "";
+  let newBlockedIP = "";
+  let newBlockedName = "";
 
   // ── Toast system ──────────────────────────────────────────────────────────
   // Each toast: { id, msg, type }
@@ -228,6 +251,21 @@
       generateQR(url);
     });
 
+    EventsOn("transfer_request", (dataStr) => {
+      try {
+        transferRequest = JSON.parse(dataStr);
+        rememberDevice = false;
+        playSound("blip");
+      } catch {}
+    });
+
+    EventsOn("transfer_request_timeout", () => {
+      if (transferRequest) {
+        toast("⏰ Transfer request timed out", "warn");
+        transferRequest = null;
+      }
+    });
+
     await initReceiver();
     // Load persisted save path for sidebar display
     try {
@@ -235,6 +273,11 @@
     } catch {
       savePath = "";
     }
+    // Load transfer settings
+    try {
+      const s = await GetTransferSettings();
+      if (s) settings = s;
+    } catch {}
   });
 
   async function initReceiver() {
@@ -393,6 +436,104 @@
     await initReceiver();
   }
 
+  // ── Transfer request handlers ─────────────────────────────────────────────
+  async function approveTransfer() {
+    if (!transferRequest) return;
+    const id = transferRequest.id;
+    // If remember device, add to trusted list
+    if (rememberDevice) {
+      settings.trustedDevices = [
+        ...settings.trustedDevices,
+        { ip: transferRequest.senderIP, friendlyName: transferRequest.senderName },
+      ];
+      await SaveTransferSettings(settings);
+    }
+    transferRequest = null;
+    await ApproveTransfer(id);
+    toast("✅ Transfer approved", "success");
+  }
+
+  async function rejectTransfer() {
+    if (!transferRequest) return;
+    const id = transferRequest.id;
+    // If remember device, add to blocked list
+    if (rememberDevice) {
+      settings.blockedDevices = [
+        ...settings.blockedDevices,
+        { ip: transferRequest.senderIP, friendlyName: transferRequest.senderName },
+      ];
+      await SaveTransferSettings(settings);
+    }
+    transferRequest = null;
+    await RejectTransfer(id);
+    toast("🚫 Transfer rejected", "warn");
+  }
+
+  // ── Settings helpers ──────────────────────────────────────────────────────
+  async function saveSettings() {
+    const result = await SaveTransferSettings(settings);
+    if (result === "ok") {
+      settingsDirty = false;
+      toast("✅ Settings saved", "success");
+    } else {
+      toast("❌ " + result, "error");
+    }
+  }
+
+  function addBlockedExt() {
+    const ext = newBlockedExt.trim();
+    if (!ext) return;
+    const formatted = ext.startsWith(".") ? ext : "." + ext;
+    if (!settings.blockedExtensions.includes(formatted)) {
+      settings.blockedExtensions = [...settings.blockedExtensions, formatted];
+      settingsDirty = true;
+    }
+    newBlockedExt = "";
+  }
+
+  function removeBlockedExt(ext) {
+    settings.blockedExtensions = settings.blockedExtensions.filter((e) => e !== ext);
+    settingsDirty = true;
+  }
+
+  function addTrustedDevice() {
+    const ip = newTrustedIP.trim();
+    if (!ip) return;
+    if (!settings.trustedDevices.find((d) => d.ip === ip)) {
+      settings.trustedDevices = [
+        ...settings.trustedDevices,
+        { ip, friendlyName: newTrustedName.trim() || ip },
+      ];
+      settingsDirty = true;
+    }
+    newTrustedIP = "";
+    newTrustedName = "";
+  }
+
+  function removeTrustedDevice(ip) {
+    settings.trustedDevices = settings.trustedDevices.filter((d) => d.ip !== ip);
+    settingsDirty = true;
+  }
+
+  function addBlockedDevice() {
+    const ip = newBlockedIP.trim();
+    if (!ip) return;
+    if (!settings.blockedDevices.find((d) => d.ip === ip)) {
+      settings.blockedDevices = [
+        ...settings.blockedDevices,
+        { ip, friendlyName: newBlockedName.trim() || ip },
+      ];
+      settingsDirty = true;
+    }
+    newBlockedIP = "";
+    newBlockedName = "";
+  }
+
+  function removeBlockedDevice(ip) {
+    settings.blockedDevices = settings.blockedDevices.filter((d) => d.ip !== ip);
+    settingsDirty = true;
+  }
+
   // Drag & drop
   function handleDragOver(e) {
     e.preventDefault();
@@ -522,6 +663,18 @@
     <div class="sidebar__spacer"></div>
 
     <!-- About nav at the bottom -->
+    <button
+      class="nav-btn nav-btn--about"
+      class:active={mode === "SETTINGS"}
+      on:click={() => {
+        playSound("blip");
+        mode = "SETTINGS";
+      }}
+      on:mouseenter={() => playSound("blip")}
+    >
+      <span class="nav-icon">⚙</span><span class="nav-label">SETTINGS</span>
+    </button>
+
     <button
       class="nav-btn nav-btn--about"
       class:active={mode === "ABOUT"}
@@ -749,6 +902,107 @@
         </div>
       </section>
 
+      <!-- SETTINGS mode -->
+    {:else if mode === "SETTINGS"}
+      <section class="panel settings-panel">
+        <div class="panel__header">
+          <h2 class="panel__title">// TRANSFER_PERMISSIONS</h2>
+        </div>
+
+        <!-- Transfer Mode -->
+        <div class="settings-group">
+          <div class="settings-group__title">⚡ TRANSFER MODE</div>
+          <div class="settings-radios">
+            {#each [
+              { val: "accept_all", label: "Accept All", desc: "Automatically accept everything" },
+              { val: "ask_first", label: "Ask First", desc: "Show approval prompt for every transfer" },
+              { val: "trusted_only", label: "Trusted Devices Only", desc: "Auto-accept from approved devices" },
+              { val: "block_all", label: "Block All", desc: "Reject all incoming transfers" },
+            ] as opt}
+              <label class="settings-radio" class:active={settings.mode === opt.val}>
+                <input type="radio" name="mode" value={opt.val}
+                  bind:group={settings.mode}
+                  on:change={() => (settingsDirty = true)} />
+                <div class="settings-radio__content">
+                  <div class="settings-radio__label">{opt.label}</div>
+                  <div class="settings-radio__desc">{opt.desc}</div>
+                </div>
+              </label>
+            {/each}
+          </div>
+        </div>
+
+        <!-- File Restrictions -->
+        <div class="settings-group">
+          <div class="settings-group__title">📁 FILE RESTRICTIONS</div>
+          <div class="settings-field">
+            <label class="settings-label">Max file size (MB) — 0 = unlimited</label>
+            <input class="settings-input" type="number" min="0"
+              bind:value={settings.maxFileSizeMB}
+              on:input={() => (settingsDirty = true)} />
+          </div>
+          <div class="settings-field">
+            <label class="settings-label">Blocked extensions</label>
+            <div class="tag-row">
+              {#each settings.blockedExtensions as ext}
+                <span class="tag tag--red">{ext}
+                  <button class="tag__rm" on:click={() => removeBlockedExt(ext)}>✕</button>
+                </span>
+              {/each}
+            </div>
+            <div class="settings-add-row">
+              <input class="settings-input" placeholder=".exe" bind:value={newBlockedExt}
+                on:keydown={(e) => e.key === "Enter" && addBlockedExt()} />
+              <button class="settings-add-btn" on:click={addBlockedExt}>+ ADD</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Trusted Devices -->
+        <div class="settings-group">
+          <div class="settings-group__title">✅ TRUSTED DEVICES</div>
+          {#each settings.trustedDevices as dev}
+            <div class="device-row">
+              <span class="device-row__name">{dev.friendlyName || dev.ip}</span>
+              <span class="device-row__ip">{dev.ip}</span>
+              <button class="device-row__rm" on:click={() => removeTrustedDevice(dev.ip)}>✕</button>
+            </div>
+          {/each}
+          <div class="settings-add-row">
+            <input class="settings-input" placeholder="IP address" bind:value={newTrustedIP} />
+            <input class="settings-input" placeholder="Name (optional)" bind:value={newTrustedName}
+              on:keydown={(e) => e.key === "Enter" && addTrustedDevice()} />
+            <button class="settings-add-btn" on:click={addTrustedDevice}>+ ADD</button>
+          </div>
+        </div>
+
+        <!-- Blocked Devices -->
+        <div class="settings-group">
+          <div class="settings-group__title">🚫 BLOCKED DEVICES</div>
+          {#each settings.blockedDevices as dev}
+            <div class="device-row device-row--blocked">
+              <span class="device-row__name">{dev.friendlyName || dev.ip}</span>
+              <span class="device-row__ip">{dev.ip}</span>
+              <button class="device-row__rm" on:click={() => removeBlockedDevice(dev.ip)}>✕</button>
+            </div>
+          {/each}
+          <div class="settings-add-row">
+            <input class="settings-input" placeholder="IP address" bind:value={newBlockedIP} />
+            <input class="settings-input" placeholder="Name (optional)" bind:value={newBlockedName}
+              on:keydown={(e) => e.key === "Enter" && addBlockedDevice()} />
+            <button class="settings-add-btn" on:click={addBlockedDevice}>+ ADD</button>
+          </div>
+        </div>
+
+        {#if settingsDirty}
+          <button class="action-btn action-btn--cyan" on:click={saveSettings}>
+            💾 SAVE SETTINGS
+          </button>
+        {:else}
+          <div class="settings-saved-hint">All changes saved</div>
+        {/if}
+      </section>
+
       <!-- ABOUT mode -->
     {:else if mode === "ABOUT"}
       <section class="panel about-panel">
@@ -827,6 +1081,55 @@
     {/if}
   </main>
 </div>
+
+<!-- Transfer Request Approval Dialog -->
+{#if transferRequest}
+  <div class="dialog-backdrop">
+    <div class="dialog transfer-dialog">
+      <div class="dialog__corner tl"></div>
+      <div class="dialog__corner tr"></div>
+      <div class="dialog__corner bl"></div>
+      <div class="dialog__corner br"></div>
+      <h2 class="dialog__title">// INCOMING_TRANSFER</h2>
+      <p class="dialog__sub">Someone wants to send you a file</p>
+
+      <div class="transfer-req-info">
+        <div class="transfer-req-row">
+          <span class="transfer-req-label">FROM</span>
+          <span class="transfer-req-val">{transferRequest.senderName || transferRequest.senderIP}</span>
+        </div>
+        <div class="transfer-req-row">
+          <span class="transfer-req-label">FILE</span>
+          <span class="transfer-req-val">{transferRequest.filename}</span>
+        </div>
+        <div class="transfer-req-row">
+          <span class="transfer-req-label">SIZE</span>
+          <span class="transfer-req-val">{transferRequest.sizeMB}</span>
+        </div>
+        <div class="transfer-req-row">
+          <span class="transfer-req-label">TYPE</span>
+          <span class="transfer-req-val">{transferRequest.mimeType || "unknown"}</span>
+        </div>
+      </div>
+
+      <label class="transfer-req-remember">
+        <input type="checkbox" bind:checked={rememberDevice} />
+        <span>Remember my choice for this device</span>
+      </label>
+
+      <div class="transfer-req-btns">
+        <button class="action-btn action-btn--red" on:click={rejectTransfer}
+          on:mouseenter={() => playSound("blip")}>
+          ✕ REJECT
+        </button>
+        <button class="action-btn action-btn--cyan" on:click={approveTransfer}
+          on:mouseenter={() => playSound("blip")}>
+          ✓ ACCEPT
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <!-- Sender URL dialog -->
 {#if showSenderDialog}
