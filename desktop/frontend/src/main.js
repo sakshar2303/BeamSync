@@ -1,4 +1,4 @@
-import './style.css'
+import './design-system/tokens.css'
 import App from './App.svelte'
 
 const app = new App({

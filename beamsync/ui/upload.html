@@ -6,165 +6,198 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>BeamSync Uplink</title>
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=Space+Mono:wght@700&display=swap');
+
         :root {
-            --bg: #000000;
-            --primary: #00ff41;
-            --glass: rgba(0, 255, 65, 0.1);
-            --border: #00ff41;
-            --text: #00ff41;
-            --scanline: rgba(0, 255, 65, 0.05);
+            --nb-bg: #F5F0E8;
+            --nb-surface: #FFFFFF;
+            --nb-text: #0C1120;
+            --nb-text-muted: #64748B;
+            --nb-primary: #1A56FF;
+            --nb-secondary: #FF7A00;
+            --nb-secondary-text: #0A0A0A;
+            --nb-border-color: #2D3F5E;
+            --nb-border: 2px solid var(--nb-border-color);
+            --nb-shadow: 4px 4px 0px #08101E;
+            --nb-shadow-hover: 6px 6px 0px #08101E;
+            --nb-radius: 0px;
         }
 
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --nb-bg: #0C1120;
+                --nb-surface: #141E30;
+                --nb-text: #E2E8F0;
+            }
+        }
+
+        * { box-sizing: border-box; }
+
         body {
-            background-color: var(--bg);
-            color: var(--text);
-            font-family: 'Courier New', Courier, monospace;
+            background-color: var(--nb-bg);
+            color: var(--nb-text);
+            font-family: 'Space Mono', monospace;
             margin: 0;
-            padding: 20px;
+            padding: 24px 16px;
             display: flex;
             flex-direction: column;
             align-items: center;
             min-height: 100vh;
-            overflow-x: hidden;
-        }
-
-        .scanlines {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: repeating-linear-gradient(0deg,
-                    rgba(0, 0, 0, 0) 0px,
-                    rgba(0, 0, 0, 0) 1px,
-                    var(--scanline) 1px,
-                    var(--scanline) 2px);
-            pointer-events: none;
-            z-index: 0;
+            -webkit-font-smoothing: antialiased;
         }
 
         .container {
-            position: relative;
-            z-index: 1;
             width: 100%;
             max-width: 400px;
             text-align: center;
+            background: var(--nb-surface);
+            border: var(--nb-border);
+            box-shadow: var(--nb-shadow);
+            padding: 32px 20px;
+            display: flex;
+            flex-direction: column;
         }
 
         h1 {
-            border-bottom: 2px solid var(--primary);
-            padding-bottom: 10px;
-            margin-bottom: 30px;
+            font-family: 'Syne', sans-serif;
+            font-size: 24px;
+            font-weight: 800;
+            margin: 0 0 24px 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
             text-transform: uppercase;
-            letter-spacing: 2px;
-            text-shadow: 0 0 10px var(--primary);
+        }
+
+        h1 svg {
+            color: var(--nb-primary);
         }
 
         .upload-zone {
-            border: 2px dashed var(--primary);
-            background: var(--glass);
+            border: var(--nb-border);
+            background: var(--nb-bg);
             padding: 40px 20px;
             margin-bottom: 20px;
-            border-radius: 4px;
             position: relative;
-            transition: all 0.3s;
+            cursor: pointer;
+            transition: transform 0.1s, box-shadow 0.1s;
         }
 
         .upload-zone:active {
-            background: rgba(0, 255, 65, 0.2);
+            transform: translate(2px, 2px);
+            background: var(--nb-secondary);
+            color: var(--nb-secondary-text);
+            border-color: var(--nb-text);
         }
 
         input[type="file"] {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
             opacity: 0;
             cursor: pointer;
+            -webkit-appearance: none;
+            appearance: none;
         }
 
         .btn {
-            background: var(--bg);
-            color: var(--primary);
-            border: 2px solid var(--primary);
-            padding: 15px 30px;
-            font-size: 1.2rem;
-            font-family: inherit;
+            background: var(--nb-primary);
+            color: #FFFFFF;
+            border: var(--nb-border);
+            padding: 16px;
+            font-size: 16px;
+            font-family: 'Syne', sans-serif;
+            font-weight: 800;
             cursor: pointer;
             text-transform: uppercase;
             width: 100%;
             margin-bottom: 20px;
-            box-shadow: 0 0 10px rgba(0, 255, 65, 0.2);
-            transition: all 0.2s;
+            box-shadow: var(--nb-shadow);
+            transition: transform 0.1s;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
         }
 
         .btn:active {
-            background: var(--primary);
-            color: var(--bg);
-            transform: scale(0.98);
+            transform: translate(2px, 2px);
+            box-shadow: 2px 2px 0px #08101E;
         }
 
         .btn:disabled {
-            opacity: 0.5;
+            background: var(--nb-text-muted);
+            box-shadow: none;
+            transform: none;
             cursor: not-allowed;
+            color: var(--nb-surface);
         }
 
         #status {
-            margin-top: 20px;
-            font-size: 0.9rem;
+            font-size: 13px;
+            font-weight: bold;
+            color: var(--nb-text-muted);
             min-height: 1.2em;
         }
 
         .file-list {
             text-align: left;
-            margin-top: 10px;
-            font-size: 0.8rem;
-            color: #ccc;
+            margin-bottom: 16px;
+            font-size: 12px;
+            padding: 10px;
+            border: 2px dashed var(--nb-border-color);
+            max-height: 120px;
+            overflow-y: auto;
         }
 
         .progress-container {
             width: 100%;
-            background-color: rgba(0, 255, 65, 0.1);
-            border: 1px solid var(--primary);
-            height: 20px;
+            background: var(--nb-bg);
+            border: var(--nb-border);
+            height: 32px;
             margin-bottom: 20px;
             display: none;
             position: relative;
+            overflow: hidden;
         }
 
         .progress-bar {
             width: 0%;
             height: 100%;
-            background-color: var(--primary);
+            background: var(--nb-primary);
             transition: width 0.1s linear;
         }
 
         .progress-text {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
+            inset: 0;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 0.8rem;
-            color: var(--bg);
-            font-weight: bold;
+            font-size: 14px;
+            color: var(--nb-text);
+            font-weight: 700;
+            text-shadow: 1px 1px 0px var(--nb-surface), -1px -1px 0px var(--nb-surface);
         }
     </style>
 </head>
 
 <body>
-    <div class="scanlines"></div>
     <div class="container">
-        <h1>// UPLINK_NODE</h1>
+        <h1>
+            <img src="/logo.png" width="32" height="32" alt="BeamSync Logo" style="border-radius: 4px;">
+            BeamSync
+        </h1>
 
         <div class="upload-zone">
-            <input type="file" id="files" multiple onchange="updateFileList()">
-            <div style="font-size: 3rem;">⬆️</div>
-            <p>TAP TO SELECT DATA</p>
+            <input type="file" id="files" multiple accept="*/*" onchange="updateFileList()">
+            <div style="margin-bottom: 8px; color: var(--nb-primary);">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="square" stroke-linejoin="miter">
+                    <path d="M21 15v4h-18v-4"></path>
+                    <polyline points="17 8 12 3 7 8"></polyline>
+                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+            </div>
+            <p style="margin: 0; font-family: 'Syne', sans-serif; font-weight: 800; font-size: 16px;">TAP TO SELECT FILES</p>
         </div>
 
         <div id="fileList" class="file-list"></div>
@@ -174,9 +207,9 @@
             <div id="progressText" class="progress-text">0%</div>
         </div>
 
-        <button class="btn" onclick="upload()">[ INITIATE UPLOAD ]</button>
+        <button class="btn" onclick="upload()">UPLOAD FILES</button>
 
-        <div id="status">>> READY_FOR_INPUT</div>
+        <div id="status">Ready to upload</div>
     </div>
 
     <script>
@@ -198,7 +231,7 @@
                         // Never reload while an upload is in flight — it would abort the transfer
                         if (_uploading) return;
                         _reloading = true;
-                        document.getElementById('status').innerText = '>> SERVER_TOKEN_CHANGED — RECONNECTING...';
+                        document.getElementById('status').innerText = 'Connection changed — Reconnecting...';
                         // Brief pause so the server is ready before reload
                         setTimeout(() => location.reload(), 800);
                     }
@@ -214,21 +247,33 @@
             const list = document.getElementById('fileList');
             if (files.length > 0) {
                 list.innerHTML = Array.from(files)
-                    .map(f => `> ${f.name} (${(f.size / 1024 / 1024).toFixed(2)} MB)`)
+                    .map(f => `${f.name} (${(f.size / 1024 / 1024).toFixed(2)} MB)`)
                     .join('<br>');
-                document.getElementById('status').innerText = `>> ${files.length} FILE(S) SELECTED`;
+                document.getElementById('status').innerText = `${files.length} file(s) selected`;
             } else {
                 list.innerHTML = '';
-                document.getElementById('status').innerText = '>> READY_FOR_INPUT';
+                document.getElementById('status').innerText = 'Ready to upload';
             }
         }
 
         async function upload() {
             const files = document.getElementById('files').files;
             if (!files.length) {
-                document.getElementById('status').innerText = '>> ERROR: NO DATA SELECTED';
+                document.getElementById('status').innerText = 'Error: No files selected';
                 return;
             }
+
+            _uploading = true;
+
+            const fd = new FormData();
+            
+            // Build and append manifest so the server knows exactly how large each file is
+            // This MUST be the first field appended so the server reads it before the file parts
+            const manifest = Array.from(files).map(f => ({ name: f.name, size: f.size }));
+            const manifestBlob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
+            fd.append('beam_manifest', manifestBlob, '');
+
+            for (let f of files) fd.append('documents', f);
 
             const btn = document.querySelector('.btn');
             const progressContainer = document.getElementById('progressContainer');
@@ -284,9 +329,11 @@
 
             btn.innerText = '[ TRANSMITTING... ]';
             statusEl.innerText = '>> UPLOADING PACKETS...';
+            btn.innerText = 'UPLOADING...';
+            statusEl.innerText = 'Uploading... Please keep this page open';
             progressContainer.style.display = 'block';
-            progressBar.style.width = '0%';
-            progressText.innerText = '0%';
+            progressBar.style.width = '5%'; // show immediately so user knows it started
+            progressText.innerText = 'Starting...';
 
             const xhr = new XMLHttpRequest();
             const startTime = Date.now();
@@ -294,43 +341,65 @@
             xhr.open('POST', '/upload?token=' + TOKEN);
 
             xhr.upload.onprogress = function (e) {
-                if (!e.lengthComputable) return;
-                const pct = (e.loaded / e.total) * 100;
-                const elapsed = (Date.now() - startTime) / 1000;
-                const speed = elapsed > 0 ? (e.loaded / 1024 / 1024 / elapsed).toFixed(2) : '0.00';
-                progressBar.style.width = pct + '%';
-                progressText.innerText = Math.round(pct) + '%';
-                statusEl.innerText = `>> SPEED: ${speed} MB/s`;
+                const elapsed = Math.max((Date.now() - startTime) / 1000, 0.001);
+                const speed = (e.loaded / 1024 / 1024 / elapsed).toFixed(2);
+                const sentMB = (e.loaded / 1024 / 1024).toFixed(1);
+
+                if (e.lengthComputable && e.total > 0) {
+                    // Normal: total size is known
+                    const pct = Math.round((e.loaded / e.total) * 100);
+                    progressBar.style.width = pct + '%';
+                    progressBar.style.opacity = '1';
+                    progressText.innerText = pct + '%';
+                } else {
+                    // iOS fallback: Photos/HEIC/HEVC — total unknown, show bytes sent
+                    progressBar.style.width = '100%';
+                    progressBar.style.opacity = '0.4';
+                    progressText.innerText = sentMB + ' MB sent';
+                }
+                statusEl.innerText = `${speed} MB/s — Please keep this page open`;
             };
 
             xhr.onload = function () {
+                progressBar.style.opacity = '1';
                 if (xhr.status === 200) {
-                    statusEl.innerText = '>> TRANSFER COMPLETE';
-                    btn.innerText = '[ UPLOAD SUCCESS ]';
+                    statusEl.innerText = 'Upload successful';
+                    btn.innerText = 'UPLOAD COMPLETE';
                     progressText.innerText = '100%';
                     progressBar.style.width = '100%';
                     setTimeout(() => {
                         btn.disabled = false;
-                        btn.innerText = '[ INITIATE UPLOAD ]';
+                        btn.innerText = 'UPLOAD FILES';
                         document.getElementById('files').value = '';
                         updateFileList();
                         progressContainer.style.display = 'none';
                         _uploading = false;
                     }, 2000);
+                    }, 3000);
                 } else {
-                    statusEl.innerText = '>> ERROR: ' + xhr.statusText;
+                    statusEl.innerText = 'Error ' + xhr.status + ': ' + (xhr.statusText || 'Server error');
                     btn.disabled = false;
-                    btn.innerText = '[ RETRY UPLOAD ]';
+                    btn.innerText = 'TRY AGAIN';
                     _uploading = false;
                 }
             };
 
             xhr.onerror = function () {
-                statusEl.innerText = '>> NETWORK ERROR';
+                progressContainer.style.display = 'none';
+                statusEl.innerText = 'Network Error — Are both devices on the same WiFi?';
                 btn.disabled = false;
-                btn.innerText = '[ RETRY UPLOAD ]';
+                btn.innerText = 'TRY AGAIN';
                 _uploading = false;
             };
+
+            xhr.ontimeout = function () {
+                statusEl.innerText = 'Timeout — Connection dropped. Please try again.';
+                btn.disabled = false;
+                btn.innerText = 'TRY AGAIN';
+                _uploading = false;
+            };
+
+            xhr.timeout = 4 * 60 * 60 * 1000; // 4 hours — matches server timeout
 
             xhr.send(fd);
         }
