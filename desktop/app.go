@@ -485,9 +485,9 @@ func (a *App) SaveTransferSettings(settings beamsync.TransferSettings) string {
 	if err := saveConfig(cfg); err != nil {
 		return fmt.Sprintf("Error saving settings: %v", err)
 	}
-	// Update the running server's settings in-place (no restart needed)
-	if a.serverApp != nil && a.serverApp.Settings() != nil {
-		*a.serverApp.Settings() = settings
+	// Update the running server's settings safely under a write lock
+	if a.serverApp != nil {
+		a.serverApp.UpdateSettings(settings)
 	}
 	fmt.Println("✅ Transfer settings saved:", settings.Mode)
 	return "ok"

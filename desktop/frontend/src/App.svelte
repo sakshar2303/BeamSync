@@ -440,12 +440,17 @@
   async function approveTransfer() {
     if (!transferRequest) return;
     const id = transferRequest.id;
-    // If remember device, add to trusted list
     if (rememberDevice) {
-      settings.trustedDevices = [
-        ...settings.trustedDevices,
-        { ip: transferRequest.senderIP, friendlyName: transferRequest.senderName },
-      ];
+      // Add to trusted, remove from blocked (mutual exclusivity)
+      settings.blockedDevices = settings.blockedDevices.filter(
+        (d) => d.ip !== transferRequest.senderIP
+      );
+      if (!settings.trustedDevices.find((d) => d.ip === transferRequest.senderIP)) {
+        settings.trustedDevices = [
+          ...settings.trustedDevices,
+          { ip: transferRequest.senderIP, friendlyName: transferRequest.senderName },
+        ];
+      }
       await SaveTransferSettings(settings);
     }
     transferRequest = null;
@@ -456,12 +461,17 @@
   async function rejectTransfer() {
     if (!transferRequest) return;
     const id = transferRequest.id;
-    // If remember device, add to blocked list
     if (rememberDevice) {
-      settings.blockedDevices = [
-        ...settings.blockedDevices,
-        { ip: transferRequest.senderIP, friendlyName: transferRequest.senderName },
-      ];
+      // Add to blocked, remove from trusted (mutual exclusivity)
+      settings.trustedDevices = settings.trustedDevices.filter(
+        (d) => d.ip !== transferRequest.senderIP
+      );
+      if (!settings.blockedDevices.find((d) => d.ip === transferRequest.senderIP)) {
+        settings.blockedDevices = [
+          ...settings.blockedDevices,
+          { ip: transferRequest.senderIP, friendlyName: transferRequest.senderName },
+        ];
+      }
       await SaveTransferSettings(settings);
     }
     transferRequest = null;

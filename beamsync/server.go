@@ -84,7 +84,8 @@ type HTTPServer struct {
 	cancel           context.CancelFunc
 	pendingMu        sync.Mutex
 	pendingTransfers map[string]*PendingTransfer
-	settings         *TransferSettings
+	settingsMu       sync.RWMutex
+	settings         TransferSettings
 }
 
 // RespondToTransfer approves or rejects a pending transfer by ID.
@@ -100,8 +101,17 @@ func (s *HTTPServer) RespondToTransfer(id string, approved bool) {
 	}
 }
 
-// Settings returns a pointer to the live TransferSettings for in-place updates.
-func (s *HTTPServer) Settings() *TransferSettings {
+// UpdateSettings safely replaces the live TransferSettings under a write lock.
+func (s *HTTPServer) UpdateSettings(newSettings TransferSettings) {
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
+	s.settings = newSettings
+}
+
+// getSettings returns a safe copy of the current settings under a read lock.
+func (s *HTTPServer) getSettings() TransferSettings {
+	s.settingsMu.RLock()
+	defer s.settingsMu.RUnlock()
 	return s.settings
 }
 
@@ -315,7 +325,7 @@ func StartServer(uploadDir string, startPort int, settings TransferSettings, cal
 	httpServer := &HTTPServer{
 		cancel:           cancel,
 		pendingTransfers: make(map[string]*PendingTransfer),
-		settings:         &settingsCopy,
+		settings:         settingsCopy,
 	}
 
 	mux := http.NewServeMux()
@@ -386,7 +396,7 @@ func StartServer(uploadDir string, startPort int, settings TransferSettings, cal
 			return
 		}
 
-		s := httpServer.settings
+		s := httpServer.getSettings()
 		senderName := s.friendlyNameForIP(senderIP)
 
 		// ── Check blocked devices ────────────────────────────────────────────
